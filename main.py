@@ -4,33 +4,42 @@ import sqlite3
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# =======================
-# ENV
-# =======================
+# ======================================================
+# ENV VARIABLES (SET THESE IN RAILWAY, NOT HERE)
+# ======================================================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# =======================
-# CONFIG
-# =======================
-OWNERS = {709844068, 6593273878}
-TARGET_CHANNEL_ID = -1002522409883
+OWNER_IDS = [int(i) for i in os.environ["OWNER_IDS"].split(",")]
+CHANNEL_ID = int(os.environ["CHANNEL_ID"])
+
 UPLOAD_TAG = "@SenpaiAnimess"
 
-THUMB_FILE_ID = None
-
-# =======================
-# DATABASE
-# =======================
+# ======================================================
+# DATABASE (Duplicate Block + Thumbnail Storage)
+# ======================================================
 db = sqlite3.connect("episodes.db", check_same_thread=False)
 cur = db.cursor()
-cur.execute("CREATE TABLE IF NOT EXISTS episodes (key TEXT PRIMARY KEY)")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS uploads (
+    key TEXT PRIMARY KEY
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY,
+    thumb_id TEXT
+)
+""")
+
 db.commit()
 
-# =======================
-# BOT
-# =======================
+# ======================================================
+# BOT CLIENT
+# ======================================================
 app = Client(
     "anime_qualifier_bot",
     api_id=API_ID,
@@ -38,121 +47,152 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# =======================
+# ======================================================
 # HELPERS
-# =======================
-def is_owner(uid):
-    return uid in OWNERS
+# ======================================================
+def is_owner(uid: int) -> bool:
+    return uid in OWNER_IDS
 
 
-def parse_video_filename(name):
-    up = name.upper()
+def parse_filename(name: str):
+    n = name.replace("_", " ").replace(".", " ").upper()
 
-    anime = "JUJUTSU KAISEN" if "JUJUTSU" in up else "UNKNOWN"
-
-    s, e = "01", "01"
-    m = re.search(r"S(\d+)E(\d+)", up)
-    if m:
-        s, e = m.group(1), m.group(2)
-
+    # Quality
     quality = "480p"
-    if "1080" in up:
+    if "2160" in n or "4K" in n:
+        quality = "2K"
+    elif "1080" in n:
         quality = "1080p"
-    elif "720" in up:
+    elif "720" in n:
         quality = "720p"
-    elif "2160" in up or "4K" in up:
-        quality = "2k"
+
+    # Season / Episode
+    season, episode = "01", "01"
+
+    m1 = re.search(r"S(\d{1,2})E(\d{1,3})", n)
+    m2 = re.search(r"(\d{1,2})X(\d{1,3})", n)
+    m3 = re.search(r"EP(?:ISODE)?\s*(\d{1,3})", n)
+
+    if m1:
+        season, episode = m1.group(1), m1.group(2)
+    elif m2:
+        season, episode = m2.group(1), m2.group(2)
+    elif m3:
+        episode = m3.group(1)
+
+    season = season.zfill(2)
+    episode = episode.zfill(2)
+
+    # Anime Name
+    anime = "JUJUTSU KAISEN" if "JUJUTSU" in n else "UNKNOWN ANIME"
 
     return {
         "anime": anime,
-        "season": f"{int(s):02d}",
-        "episode": f"{int(e):02d}",
+        "season": season,
+        "episode": episode,
         "quality": quality
     }
 
 
-def build_caption(i):
+def build_caption(info: dict) -> str:
     return (
-        f"⬡ **{i['anime']}**\n"
+        f"⬡ **{info['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ Season : {i['season']}\n"
-        f"┃ Episode : {i['episode']}\n"
-        f"┃ Audio : Hindi #Official\n"
-        f"┃ Quality : {i['quality']}\n"
+        f"┃ **Season : {info['season']}**\n"
+        f"┃ **Episode : {info['episode']}**\n"
+        f"┃ **Audio : Hindi #Official**\n"
+        f"┃ **Quality : {info['quality']}**\n"
         f"┗━━━━━━━━━━━━━━━━━━┛\n"
-        f"⬡ Uploaded By {UPLOAD_TAG}"
+        f"⬡ **Uploaded By {UPLOAD_TAG}**"
     )
 
 
-def episode_key(i):
-    return f"{i['anime']}_S{i['season']}E{i['episode']}_{i['quality']}"
+def episode_key(info: dict) -> str:
+    return f"{info['anime']}_S{info['season']}E{info['episode']}_{info['quality']}"
 
-# =======================
+
+def get_thumb():
+    cur.execute("SELECT thumb_id FROM settings WHERE id=1")
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+# ======================================================
 # COMMANDS
-# =======================
+# ======================================================
 @app.on_message(filters.command("ping"))
 async def ping(_, m):
-    await m.reply_text("✅ Bot Alive")
+    await m.reply_text("🏓 **Pong! Anime Qualifier Bot is alive.**")
 
 
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
-    global THUMB_FILE_ID
     if not is_owner(m.from_user.id):
         return
+
     if not m.reply_to_message.photo:
-        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    await m.reply("✅ Thumbnail set")
+        return await m.reply_text("❌ Photo ke reply me /set_thumb bhejo")
+
+    thumb_id = m.reply_to_message.photo.file_id
+    cur.execute(
+        "INSERT OR REPLACE INTO settings (id, thumb_id) VALUES (1, ?)",
+        (thumb_id,)
+    )
+    db.commit()
+
+    await m.reply_text("✅ **Thumbnail saved permanently**")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    if THUMB_FILE_ID:
-        await m.reply_photo(THUMB_FILE_ID)
-    else:
-        await m.reply("❌ Thumbnail nahi hai")
+    thumb = get_thumb()
+    if not thumb:
+        return await m.reply_text("❌ Thumbnail set nahi hai")
 
-# =======================
-# RE-UPLOAD HANDLER
-# =======================
-@app.on_message(filters.media)
-async def handle_media(client, message: Message):
-    print("📥 Media received")
+    await m.reply_photo(thumb, caption="🖼 **Current Thumbnail**")
 
-    if not message.from_user or not is_owner(message.from_user.id):
+
+# ======================================================
+# MAIN VIDEO HANDLER (RE-UPLOAD)
+# ======================================================
+@app.on_message((filters.video | filters.document))
+async def handle_video(client, message: Message):
+    if not is_owner(message.from_user.id):
         return
 
     media = message.video or message.document
-    if not media:
+    if not media.file_name:
         return
 
-    file_name = media.file_name or "video.mp4"
-    info = parse_video_filename(file_name)
+    info = parse_filename(media.file_name)
     key = episode_key(info)
 
-    cur.execute("SELECT key FROM episodes WHERE key=?", (key,))
+    # Duplicate block
+    cur.execute("SELECT 1 FROM uploads WHERE key=?", (key,))
     if cur.fetchone():
-        await message.reply("⛔ Duplicate episode")
-        return
+        return await message.reply_text("⛔ **Duplicate episode detected. Upload blocked.**")
 
     caption = build_caption(info)
-    status = await message.reply("📤 Uploading to channel...")
+    thumb = get_thumb()
+
+    status = await message.reply_text("📤 **Re-uploading to channel...**")
 
     await client.send_video(
-        chat_id=TARGET_CHANNEL_ID,
+        chat_id=CHANNEL_ID,
         video=media.file_id,
         caption=caption,
-        thumb=THUMB_FILE_ID
+        thumb=thumb,
+        supports_streaming=True
     )
 
-    cur.execute("INSERT OR IGNORE INTO episodes VALUES (?)", (key,))
+    cur.execute("INSERT OR IGNORE INTO uploads (key) VALUES (?)", (key,))
     db.commit()
 
-    await status.edit("✅ Uploaded successfully")
+    await status.edit_text("✅ **Upload complete & saved permanently**")
 
-# =======================
-# START
-# =======================
+
+# ======================================================
+# START BOT
+# ======================================================
 print("🤖 Anime Qualifier Bot is LIVE")
 app.run()
