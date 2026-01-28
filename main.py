@@ -1,7 +1,6 @@
 import os
 import re
 import sqlite3
-import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -15,7 +14,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # =======================
 # CONFIG
 # =======================
-OWNERS = {709844068, 6593273878}   # apne telegram IDs
+OWNERS = {709844068, 6593273878}
 TARGET_CHANNEL_ID = -1002522409883
 UPLOAD_TAG = "@SenpaiAnimess"
 
@@ -23,7 +22,7 @@ BOT_ACTIVE = True
 THUMB_FILE_ID = None
 
 # =======================
-# DATABASE (duplicate block)
+# DATABASE (Duplicate Block)
 # =======================
 db = sqlite3.connect("episodes.db", check_same_thread=False)
 cur = db.cursor()
@@ -56,28 +55,28 @@ def parse_video_filename(name: str):
 
     anime = "JUJUTSU KAISEN" if "JUJUTSU" in up else "UNKNOWN"
 
-    s, e = "01", "01"
+    season, episode = "01", "01"
 
     m1 = re.search(r"S(\d{1,2})E(\d{1,3})", up)
     m2 = re.search(r"(\d{1,2})X(\d{1,3})", up)
 
     if m1:
-        s, e = m1.group(1), m1.group(2)
+        season, episode = m1.group(1), m1.group(2)
     elif m2:
-        s, e = m2.group(1), m2.group(2)
+        season, episode = m2.group(1), m2.group(2)
 
     quality = "480p"
-    if "1080" in up:
+    if "2160" in up or "4K" in up:
+        quality = "2k"
+    elif "1080" in up:
         quality = "1080p"
     elif "720" in up:
         quality = "720p"
-    elif "2160" in up or "4K" in up:
-        quality = "2k"
 
     return {
         "anime": anime,
-        "season": f"{int(s):02d}",
-        "episode": f"{int(e):02d}",
+        "season": f"{int(season):02d}",
+        "episode": f"{int(episode):02d}",
         "quality": quality
     }
 
@@ -98,22 +97,31 @@ def build_caption(info: dict) -> str:
 def episode_key(info: dict) -> str:
     return f"{info['anime']}_S{info['season']}E{info['episode']}_{info['quality']}"
 
-
 # =======================
 # COMMANDS
 # =======================
 @app.on_message(filters.command("ping"))
 async def ping(_, m):
-    await m.reply_text("🏓 Pong! Bot is alive.")
+    await m.reply_text("✅ Anime Qualifier Bot is alive!")
 
 
-@app.on_message(filters.command("set_thumb") & filters.photo)
+@app.on_message(filters.command("set_thumb"))
 async def set_thumb(_, m: Message):
     global THUMB_FILE_ID
+
     if not is_owner(m.from_user.id):
         return
-    THUMB_FILE_ID = m.photo.file_id
-    await m.reply_text("✅ Thumbnail SET (file_id saved)")
+
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        return await m.reply_text(
+            "❌ Photo ko reply karke /set_thumb bhejo\n\n"
+            "Step:\n"
+            "1) Photo bhejo\n"
+            "2) Us photo ke reply me /set_thumb"
+        )
+
+    THUMB_FILE_ID = m.reply_to_message.photo.file_id
+    await m.reply_text("✅ Thumbnail SET successfully")
 
 
 @app.on_message(filters.command("view_thumb"))
@@ -121,11 +129,10 @@ async def view_thumb(_, m):
     if THUMB_FILE_ID:
         await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
     else:
-        await m.reply_text("❌ Thumbnail nahi hai")
-
+        await m.reply_text("❌ Thumbnail set nahi hai")
 
 # =======================
-# MAIN REUPLOAD HANDLER
+# MAIN RE-UPLOAD HANDLER
 # =======================
 @app.on_message(filters.video | filters.document)
 async def reupload(client, message: Message):
@@ -141,31 +148,25 @@ async def reupload(client, message: Message):
     info = parse_video_filename(file_name)
     key = episode_key(info)
 
-    # duplicate block
     cur.execute("SELECT key FROM episodes WHERE key=?", (key,))
     if cur.fetchone():
         await message.reply_text("⛔ Duplicate episode detected. Upload blocked.")
         return
 
     caption = build_caption(info)
-
-    status = await message.reply_text("📤 Uploading to channel...")
+    status = await message.reply_text("📤 Re-uploading to channel...")
 
     await client.send_video(
         chat_id=TARGET_CHANNEL_ID,
         video=media.file_id,
         caption=caption,
-        thumb=THUMB_FILE_ID,
-        progress=lambda c, t: asyncio.create_task(
-            status.edit_text(f"⬆️ Uploading… {int(c * 100 / t)}%")
-        )
+        thumb=THUMB_FILE_ID
     )
 
     cur.execute("INSERT OR IGNORE INTO episodes VALUES (?)", (key,))
     db.commit()
 
-    await status.edit_text("✅ Upload complete & saved to database")
-
+    await status.edit_text("✅ Upload complete & saved")
 
 # =======================
 # START
