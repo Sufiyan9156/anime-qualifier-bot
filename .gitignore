@@ -1,6 +1,5 @@
-__pycache__/
-*.pyc
+episodes.db
 *.session
 *.session-journal
-.env
-episodes.db
+__pycache__/
+downloads/
