@@ -4,47 +4,49 @@ import sqlite3
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# ======================
-# ENV (Railway variables)
-# ======================
+# =======================
+# ENV (Railway)
+# =======================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# ======================
+# =======================
 # CONFIG
-# ======================
-OWNERS = {2079844068, 6593273878}
-TARGET_CHANNEL_ID = -1002522409883  # 🔴 your channel id
+# =======================
+OWNERS = {709844068, 6593273878}
+TARGET_CHANNEL_ID = -1002522409883
 UPLOAD_TAG = "@SenpaiAnimess"
 
 BOT_ACTIVE = True
 THUMB_FILE_ID = None
 
-# ======================
-# DATABASE (duplicate block)
-# ======================
+# =======================
+# DATABASE (Duplicate Block)
+# =======================
 db = sqlite3.connect("episodes.db", check_same_thread=False)
 cur = db.cursor()
-cur.execute(
-    "CREATE TABLE IF NOT EXISTS uploaded (key TEXT PRIMARY KEY)"
+cur.execute("""
+CREATE TABLE IF NOT EXISTS episodes (
+    key TEXT PRIMARY KEY
 )
+""")
 db.commit()
 
-# ======================
+# =======================
 # BOT CLIENT
-# ======================
+# =======================
 app = Client(
     "anime_qualifier_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
+    bot_token=BOT_TOKEN
 )
 
-# ======================
+# =======================
 # HELPERS
-# ======================
-def is_owner(uid: int):
+# =======================
+def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
 
@@ -53,7 +55,8 @@ def parse_video_filename(name: str):
 
     anime = "JUJUTSU KAISEN" if "JUJUTSU" in up else "UNKNOWN"
 
-    season = episode = None
+    season, episode = "01", "01"
+
     m1 = re.search(r"S(\d{1,2})E(\d{1,3})", up)
     m2 = re.search(r"(\d{1,2})X(\d{1,3})", up)
 
@@ -61,141 +64,112 @@ def parse_video_filename(name: str):
         season, episode = m1.group(1), m1.group(2)
     elif m2:
         season, episode = m2.group(1), m2.group(2)
-    else:
-        season, episode = "1", "1"
 
     quality = "480p"
-    if "1080" in up:
+    if "2160" in up or "4K" in up:
+        quality = "2k"
+    elif "1080" in up:
         quality = "1080p"
     elif "720" in up:
         quality = "720p"
-    elif "2160" in up or "4K" in up:
-        quality = "2k"
 
     return {
         "anime": anime,
         "season": f"{int(season):02d}",
         "episode": f"{int(episode):02d}",
-        "quality": quality,
+        "quality": quality
     }
 
 
-def build_caption(info):
+def build_caption(info: dict) -> str:
     return (
         f"⬡ **{info['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ **Season : {info['season']}**\n"
-        f"┃ **Episode : {info['episode']}**\n"
-        f"┃ **Audio : Hindi #Official**\n"
-        f"┃ **Quality : {info['quality']}**\n"
+        f"┃ Season : {info['season']}\n"
+        f"┃ Episode : {info['episode']}\n"
+        f"┃ Audio : Hindi #Official\n"
+        f"┃ Quality : {info['quality']}\n"
         f"┗━━━━━━━━━━━━━━━━━━┛\n"
-        f"⬡ **Uploaded By : {UPLOAD_TAG}**"
+        f"⬡ Uploaded By {UPLOAD_TAG}"
     )
 
 
-# ======================
-# BASIC COMMANDS
-# ======================
-@app.on_message(filters.command("start"))
-async def start(_, message: Message):
-    await message.reply_text(
-        "🤖 **Anime Qualifier Bot Ready**\n\n"
-        "/ping – status\n"
-        "/on – enable bot (owner)\n"
-        "/off – disable bot (owner)\n"
-        "/set_thumb – reply photo\n"
-        "/view_thumb\n"
-        "/del_thumb"
-    )
+def episode_key(info: dict) -> str:
+    return f"{info['anime']}_S{info['season']}E{info['episode']}_{info['quality']}"
 
-
+# =======================
+# COMMANDS
+# =======================
 @app.on_message(filters.command("ping"))
-async def ping(_, message: Message):
-    await message.reply_text("🏓 **Pong! Bot is alive.**")
+async def ping(_, m):
+    await m.reply_text("✅ Anime Qualifier Bot is alive!")
 
 
-@app.on_message(filters.command("on"))
-async def bot_on(_, message: Message):
-    global BOT_ACTIVE
-    if not is_owner(message.from_user.id):
-        return
-    BOT_ACTIVE = True
-    await message.reply_text("✅ **Bot ENABLED**")
-
-
-@app.on_message(filters.command("off"))
-async def bot_off(_, message: Message):
-    global BOT_ACTIVE
-    if not is_owner(message.from_user.id):
-        return
-    BOT_ACTIVE = False
-    await message.reply_text("⛔ **Bot DISABLED**")
-
-
-# ======================
-# THUMBNAIL (file_id based)
-# ======================
 @app.on_message(filters.command("set_thumb"))
-async def set_thumb(_, message: Message):
+async def set_thumb(_, m: Message):
     global THUMB_FILE_ID
-    if not is_owner(message.from_user.id):
+
+    if not is_owner(m.from_user.id):
         return
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        return await message.reply_text("❌ Photo ko reply karke /set_thumb")
-    THUMB_FILE_ID = message.reply_to_message.photo.file_id
-    await message.reply_text("✅ **Thumbnail SET**")
+
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        return await m.reply_text(
+            "❌ Photo ko reply karke /set_thumb bhejo\n\n"
+            "Step:\n"
+            "1) Photo bhejo\n"
+            "2) Us photo ke reply me /set_thumb"
+        )
+
+    THUMB_FILE_ID = m.reply_to_message.photo.file_id
+    await m.reply_text("✅ Thumbnail SET successfully")
 
 
 @app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, message: Message):
-    if not THUMB_FILE_ID:
-        return await message.reply_text("❌ No thumbnail set")
-    await message.reply_photo(THUMB_FILE_ID)
+async def view_thumb(_, m):
+    if THUMB_FILE_ID:
+        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
+    else:
+        await m.reply_text("❌ Thumbnail set nahi hai")
 
-
-@app.on_message(filters.command("del_thumb"))
-async def del_thumb(_, message: Message):
-    global THUMB_FILE_ID
-    if not is_owner(message.from_user.id):
-        return
-    THUMB_FILE_ID = None
-    await message.reply_text("🗑 **Thumbnail DELETED**")
-
-
-# ======================
-# VIDEO HANDLER (MAIN FEATURE)
-# ======================
+# =======================
+# MAIN RE-UPLOAD HANDLER
+# =======================
 @app.on_message(filters.video | filters.document)
-async def handle_video(client: Client, message: Message):
+async def reupload(client, message: Message):
     if not BOT_ACTIVE:
         return
-    if message.from_user.id not in OWNERS:
+
+    if not is_owner(message.from_user.id):
         return
 
-    video = message.video or message.document
-    if not video.file_name:
-        return
+    media = message.video or message.document
+    file_name = media.file_name or "video.mp4"
 
-    info = parse_video_filename(video.file_name)
-    unique_key = f"{info['anime']}_{info['season']}_{info['episode']}_{info['quality']}"
+    info = parse_video_filename(file_name)
+    key = episode_key(info)
 
-    cur.execute("SELECT 1 FROM uploaded WHERE key=?", (unique_key,))
+    cur.execute("SELECT key FROM episodes WHERE key=?", (key,))
     if cur.fetchone():
-        return await message.reply_text("⚠️ **Duplicate episode blocked**")
+        await message.reply_text("⛔ Duplicate episode detected. Upload blocked.")
+        return
 
     caption = build_caption(info)
-    await message.reply_text("📤 **Re-uploading to channel...**")
+    status = await message.reply_text("📤 Re-uploading to channel...")
 
     await client.send_video(
         chat_id=TARGET_CHANNEL_ID,
-        video=video.file_id,
+        video=media.file_id,
         caption=caption,
-        thumb=THUMB_FILE_ID,
+        thumb=THUMB_FILE_ID
     )
 
-    cur.execute("INSERT INTO uploaded VALUES (?)", (unique_key,))
+    cur.execute("INSERT OR IGNORE INTO episodes VALUES (?)", (key,))
     db.commit()
 
+    await status.edit_text("✅ Upload complete & saved")
 
-print("🤖 Bot starting (Railway production mode)...")
+# =======================
+# START
+# =======================
+print("🤖 Anime Qualifier Bot is LIVE")
 app.run()
