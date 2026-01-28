@@ -17,20 +17,16 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNERS = {709844068, 6593273878}
 TARGET_CHANNEL_ID = -1002522409883
 UPLOAD_TAG = "@SenpaiAnimess"
-
 BOT_ACTIVE = True
-THUMB_FILE_ID = None
 
 # =======================
-# DATABASE (Duplicate Block)
+# DATABASE
 # =======================
 db = sqlite3.connect("episodes.db", check_same_thread=False)
 cur = db.cursor()
-cur.execute("""
-CREATE TABLE IF NOT EXISTS episodes (
-    key TEXT PRIMARY KEY
-)
-""")
+
+cur.execute("CREATE TABLE IF NOT EXISTS episodes (key TEXT PRIMARY KEY)")
+cur.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
 db.commit()
 
 # =======================
@@ -50,20 +46,33 @@ def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
 
+def get_thumb():
+    cur.execute("SELECT value FROM config WHERE key='thumb'")
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def set_thumb_db(file_id: str):
+    cur.execute(
+        "INSERT OR REPLACE INTO config VALUES ('thumb', ?)",
+        (file_id,)
+    )
+    db.commit()
+
+
 def parse_video_filename(name: str):
     up = name.upper()
 
     anime = "JUJUTSU KAISEN" if "JUJUTSU" in up else "UNKNOWN"
 
-    season, episode = "01", "01"
-
+    s, e = "01", "01"
     m1 = re.search(r"S(\d{1,2})E(\d{1,3})", up)
     m2 = re.search(r"(\d{1,2})X(\d{1,3})", up)
 
     if m1:
-        season, episode = m1.group(1), m1.group(2)
+        s, e = m1.group(1), m1.group(2)
     elif m2:
-        season, episode = m2.group(1), m2.group(2)
+        s, e = m2.group(1), m2.group(2)
 
     quality = "480p"
     if "2160" in up or "4K" in up:
@@ -75,10 +84,14 @@ def parse_video_filename(name: str):
 
     return {
         "anime": anime,
-        "season": f"{int(season):02d}",
-        "episode": f"{int(episode):02d}",
+        "season": f"{int(s):02d}",
+        "episode": f"{int(e):02d}",
         "quality": quality
     }
+
+
+def episode_key(info: dict) -> str:
+    return f"{info['anime']}_S{info['season']}E{info['episode']}_{info['quality']}"
 
 
 def build_caption(info: dict) -> str:
@@ -93,10 +106,6 @@ def build_caption(info: dict) -> str:
         f"⬡ Uploaded By {UPLOAD_TAG}"
     )
 
-
-def episode_key(info: dict) -> str:
-    return f"{info['anime']}_S{info['season']}E{info['episode']}_{info['quality']}"
-
 # =======================
 # COMMANDS
 # =======================
@@ -107,38 +116,34 @@ async def ping(_, m):
 
 @app.on_message(filters.command("set_thumb"))
 async def set_thumb(_, m: Message):
-    global THUMB_FILE_ID
-
     if not is_owner(m.from_user.id):
         return
 
     if not m.reply_to_message or not m.reply_to_message.photo:
         return await m.reply_text(
-            "❌ Photo ko reply karke /set_thumb bhejo\n\n"
-            "Step:\n"
-            "1) Photo bhejo\n"
-            "2) Us photo ke reply me /set_thumb"
+            "❌ Photo ko reply karke /set_thumb bhejo"
         )
 
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    await m.reply_text("✅ Thumbnail SET successfully")
+    file_id = m.reply_to_message.photo.file_id
+    set_thumb_db(file_id)
+    await m.reply_text("✅ Thumbnail SET (saved permanently)")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    if THUMB_FILE_ID:
-        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
+    thumb = get_thumb()
+    if thumb:
+        await m.reply_photo(thumb, caption="🖼 Current Thumbnail")
     else:
         await m.reply_text("❌ Thumbnail set nahi hai")
 
 # =======================
-# MAIN RE-UPLOAD HANDLER
+# RE-UPLOAD HANDLER
 # =======================
 @app.on_message(filters.video | filters.document)
 async def reupload(client, message: Message):
     if not BOT_ACTIVE:
         return
-
     if not is_owner(message.from_user.id):
         return
 
@@ -150,17 +155,19 @@ async def reupload(client, message: Message):
 
     cur.execute("SELECT key FROM episodes WHERE key=?", (key,))
     if cur.fetchone():
-        await message.reply_text("⛔ Duplicate episode detected. Upload blocked.")
+        await message.reply_text("⛔ Duplicate episode detected.")
         return
 
     caption = build_caption(info)
+    thumb = get_thumb()
+
     status = await message.reply_text("📤 Re-uploading to channel...")
 
     await client.send_video(
         chat_id=TARGET_CHANNEL_ID,
         video=media.file_id,
         caption=caption,
-        thumb=THUMB_FILE_ID
+        thumb=thumb
     )
 
     cur.execute("INSERT OR IGNORE INTO episodes VALUES (?)", (key,))
