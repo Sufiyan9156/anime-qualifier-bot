@@ -62,14 +62,14 @@ def parse_video_filename(name: str):
 
 def build_caption(i):
     return (
-        f"⬡ **{i['anime']}**\n"
-        f"┏━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ Season : {i['season']}\n"
-        f"┃ Episode : {i['episode']}\n"
-        f"┃ Audio : Hindi #Official\n"
-        f"┃ Quality : {i['quality']}\n"
-        f"┗━━━━━━━━━━━━━━━━━━┛\n"
-        f"⬡ Uploaded By {UPLOAD_TAG}"
+        f"<b>⬡ {i['anime']}</b>\n"
+        f"<b>┏━━━━━━━━━━━━━━━━━━┓</b>\n"
+        f"<b>┃ Season : {i['season']}</b>\n"
+        f"<b>┃ Episode : {i['episode']}</b>\n"
+        f"<b>┃ Audio : Hindi #Official</b>\n"
+        f"<b>┃ Quality : {i['quality']}</b>\n"
+        f"<b>┗━━━━━━━━━━━━━━━━━━┛</b>\n"
+        f"<b>⬡ Uploaded By {UPLOAD_TAG}</b>"
     )
 
 
@@ -107,7 +107,7 @@ async def view_thumb(_, m):
         await m.reply("❌ Thumbnail nahi hai")
 
 # =======================
-# MAIN HANDLER
+# MAIN HANDLER (DOWNLOAD → UPLOAD)
 # =======================
 @app.on_message(filters.video | filters.document)
 async def handle_video(client, message: Message):
@@ -122,14 +122,29 @@ async def handle_video(client, message: Message):
     caption = build_caption(info)
     new_name = build_filename(info)
 
-    status = await message.reply("📤 Processing video...")
+    status = await message.reply("⬇️ Downloading… 0%")
 
+    # DOWNLOAD
+    local_path = await client.download_media(
+        media,
+        progress=lambda c, t: status.edit_text(
+            f"⬇️ Downloading… {int(c * 100 / t)}%"
+        )
+    )
+
+    await status.edit("⬆️ Uploading… 0%")
+
+    # UPLOAD WITH THUMB + RENAME
     await client.send_video(
         chat_id=message.chat.id,
-        video=media.file_id,
+        video=local_path,
         caption=caption,
         thumb=THUMB_FILE_ID,
-        file_name=new_name
+        file_name=new_name,
+        parse_mode="html",
+        progress=lambda c, t: status.edit_text(
+            f"⬆️ Uploading… {int(c * 100 / t)}%"
+        )
     )
 
     await status.edit("✅ Video processed & sent back")
