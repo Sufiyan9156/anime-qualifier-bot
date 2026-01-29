@@ -1,6 +1,5 @@
 import os
 import re
-import sqlite3
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -15,28 +14,8 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # CONFIG
 # =======================
 OWNERS = {709844068, 6593273878}
-TARGET_CHANNEL_ID = -1002522409883
 UPLOAD_TAG = "@SenpaiAnimess"
-
-# =======================
-# DATABASE
-# =======================
-db = sqlite3.connect("episodes.db", check_same_thread=False)
-cur = db.cursor()
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS episodes (
-    key TEXT PRIMARY KEY
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS settings (
-    k TEXT PRIMARY KEY,
-    v TEXT
-)
-""")
-db.commit()
+THUMB_FILE_ID = None
 
 # =======================
 # BOT
@@ -51,19 +30,8 @@ app = Client(
 # =======================
 # HELPERS
 # =======================
-def is_owner(uid: int) -> bool:
+def is_owner(uid):
     return uid in OWNERS
-
-
-def get_thumb():
-    cur.execute("SELECT v FROM settings WHERE k='thumb'")
-    r = cur.fetchone()
-    return r[0] if r else None
-
-
-def set_thumb_db(fid):
-    cur.execute("INSERT OR REPLACE INTO settings VALUES ('thumb', ?)", (fid,))
-    db.commit()
 
 
 def parse_video_filename(name: str):
@@ -71,14 +39,10 @@ def parse_video_filename(name: str):
 
     anime = "JUJUTSU KAISEN" if "JUJUTSU" in up else "UNKNOWN"
 
-    s, e = "01", "01"
-    m1 = re.search(r"S(\d{1,2})E(\d{1,3})", up)
-    m2 = re.search(r"(\d{1,2})X(\d{1,3})", up)
-
-    if m1:
-        s, e = m1.group(1), m1.group(2)
-    elif m2:
-        s, e = m2.group(1), m2.group(2)
+    season, episode = "01", "01"
+    m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
+    if m:
+        season, episode = m.group(1), m.group(2)
 
     quality = "480p"
     if "2160" in up or "4K" in up:
@@ -89,14 +53,14 @@ def parse_video_filename(name: str):
         quality = "720p"
 
     return {
-        "anime": anime,
-        "season": f"{int(s):02d}",
-        "episode": f"{int(e):02d}",
+        "anime": anime.title(),
+        "season": f"{int(season):02d}",
+        "episode": f"{int(episode):02d}",
         "quality": quality
     }
 
 
-def build_caption(i: dict) -> str:
+def build_caption(i):
     return (
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
@@ -109,78 +73,66 @@ def build_caption(i: dict) -> str:
     )
 
 
-def episode_key(i: dict) -> str:
-    return f"{i['anime']}_S{i['season']}E{i['episode']}_{i['quality']}"
+def build_filename(i):
+    return (
+        f"{i['anime']} Season {i['season']} "
+        f"Episode {i['episode']} "
+        f"[{i['quality']}] {UPLOAD_TAG}.mp4"
+    )
 
 # =======================
 # COMMANDS
 # =======================
 @app.on_message(filters.command("ping"))
 async def ping(_, m):
-    await m.reply_text("🏓 Anime Qualifier Bot is alive!")
+    await m.reply_text("✅ Anime Qualifier Bot is alive")
 
 
-@app.on_message(filters.command("set_thumb"))
+@app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
+    global THUMB_FILE_ID
     if not is_owner(m.from_user.id):
         return
-
-    if not m.reply_to_message or not m.reply_to_message.photo:
-        return await m.reply_text("❌ Photo ko reply karke /set_thumb bhejo")
-
-    set_thumb_db(m.reply_to_message.photo.file_id)
-    await m.reply_text("✅ Thumbnail permanently saved")
+    if not m.reply_to_message.photo:
+        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
+    THUMB_FILE_ID = m.reply_to_message.photo.file_id
+    await m.reply("✅ Thumbnail set successfully")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    fid = get_thumb()
-    if fid:
-        await m.reply_photo(fid, caption="🖼 Current Thumbnail")
+    if THUMB_FILE_ID:
+        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
     else:
-        await m.reply_text("❌ Thumbnail set nahi hai")
+        await m.reply("❌ Thumbnail nahi hai")
 
 # =======================
-# REUPLOAD HANDLER
+# MAIN HANDLER
 # =======================
 @app.on_message(filters.video | filters.document)
-async def reupload(client, message: Message):
-    try:
-        print("📥 Media received")
+async def handle_video(client, message: Message):
+    if not message.from_user or not is_owner(message.from_user.id):
+        return
 
-        if not message.from_user or not is_owner(message.from_user.id):
-            return
+    media = message.video or message.document
+    if not media:
+        return
 
-        media = message.video or message.document
-        if not media:
-            return
+    info = parse_video_filename(media.file_name or "video.mp4")
+    caption = build_caption(info)
+    new_name = build_filename(info)
 
-        file_name = media.file_name or "video.mp4"
-        info = parse_video_filename(file_name)
-        key = episode_key(info)
+    status = await message.reply("📤 Processing video...")
 
-        cur.execute("SELECT key FROM episodes WHERE key=?", (key,))
-        if cur.fetchone():
-            return await message.reply_text("⛔ Duplicate episode detected")
+    await client.send_video(
+        chat_id=message.chat.id,
+        video=media.file_id,
+        caption=caption,
+        thumb=THUMB_FILE_ID,
+        file_name=new_name
+    )
 
-        caption = build_caption(info)
-        status = await message.reply_text("📤 Re-uploading to channel...")
-
-        await client.send_video(
-            chat_id=TARGET_CHANNEL_ID,
-            video=media.file_id,
-            caption=caption,
-            thumb=get_thumb()
-        )
-
-        cur.execute("INSERT OR IGNORE INTO episodes VALUES (?)", (key,))
-        db.commit()
-
-        await status.edit_text("✅ Upload successful")
-
-    except Exception as e:
-        print("❌ ERROR:", e)
-        await message.reply_text(f"❌ Error: {e}")
+    await status.edit("✅ Video processed & sent back")
 
 # =======================
 # START
