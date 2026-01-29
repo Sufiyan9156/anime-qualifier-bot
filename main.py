@@ -1,11 +1,10 @@
 import os
 import re
-import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # =======================
-# ENV
+# ENV (Railway)
 # =======================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -17,7 +16,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
-THUMB_PATH = "thumb.jpg"
+THUMB_FILE_ID = None  # runtime (fast, safe)
 
 # =======================
 # BOT
@@ -32,36 +31,37 @@ app = Client(
 # =======================
 # HELPERS
 # =======================
-def determine_quality(name: str):
-    up = name.upper()
-    if "2160" in up or "4K" in up:
-        return "2k"
-    if "1080" in up:
-        return "1080p"
-    if "720" in up:
-        return "720p"
-    return "480p"
+def is_owner(uid: int) -> bool:
+    return uid in OWNERS
 
 
-def parse_filename(name: str):
+def parse_video_filename(name: str):
     up = name.upper()
 
-    anime = "Jujutsu Kaisen"
+    anime = "Jujutsu Kaisen" if "JUJUTSU" in up else "Unknown"
+
     season, episode = "01", "01"
-
     m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
     if m:
         season, episode = m.group(1), m.group(2)
+
+    quality = "480p"
+    if "2160" in up or "4K" in up:
+        quality = "2k"
+    elif "1080" in up:
+        quality = "1080p"
+    elif "720" in up:
+        quality = "720p"
 
     return {
         "anime": anime,
         "season": f"{int(season):02d}",
         "episode": f"{int(episode):02d}",
-        "quality": determine_quality(name)
+        "quality": quality
     }
 
 
-def build_caption(i):
+def build_caption(i: dict) -> str:
     return (
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
@@ -74,7 +74,7 @@ def build_caption(i):
     )
 
 
-def build_filename(i):
+def build_filename(i: dict) -> str:
     return (
         f"{i['anime']} Season {i['season']} "
         f"Episode {i['episode']} "
@@ -84,69 +84,62 @@ def build_filename(i):
 # =======================
 # COMMANDS
 # =======================
+@app.on_message(filters.command("ping"))
+async def ping(_, m: Message):
+    await m.reply_text("✅ Anime Qualifier Bot is alive")
+
+
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
-    if m.from_user.id not in OWNERS:
+    global THUMB_FILE_ID
+
+    if not is_owner(m.from_user.id):
         return
 
     if not m.reply_to_message.photo:
-        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
+        return await m.reply_text("❌ Photo ko reply karke /set_thumb bhejo")
 
-    await m.reply_to_message.download(THUMB_PATH)
-    await m.reply("✅ Thumbnail saved (burn mode)")
+    THUMB_FILE_ID = m.reply_to_message.photo.file_id
+    await m.reply_text("✅ Thumbnail set successfully")
 
-@app.on_message(filters.command("ping"))
-async def ping(_, m):
-    await m.reply("✅ Bot alive (ffmpeg mode)")
+
+@app.on_message(filters.command("view_thumb"))
+async def view_thumb(_, m: Message):
+    if THUMB_FILE_ID:
+        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
+    else:
+        await m.reply_text("❌ Thumbnail set nahi hai")
 
 # =======================
-# MAIN HANDLER
+# MAIN HANDLER (NO BURN)
 # =======================
 @app.on_message(filters.video | filters.document)
-async def process_video(client, message: Message):
-    if message.from_user.id not in OWNERS:
+async def handle_video(client: Client, message: Message):
+    if not message.from_user or not is_owner(message.from_user.id):
         return
 
     media = message.video or message.document
     if not media:
         return
 
-    status = await message.reply("⬇️ Downloading video...")
-
-    input_video = await message.download()
-    info = parse_filename(media.file_name or "video.mp4")
-
-    output_video = build_filename(info)
+    info = parse_video_filename(media.file_name or "video.mp4")
     caption = build_caption(info)
+    new_name = build_filename(info)
 
-    await status.edit("🎨 Applying thumbnail (burning)...")
-
-    # FFmpeg command
-    subprocess.run([
-        "ffmpeg",
-        "-y",
-        "-i", input_video,
-        "-i", THUMB_PATH,
-        "-filter_complex", "overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2",
-        "-c:a", "copy",
-        output_video
-    ], check=True)
-
-    await status.edit("⬆️ Uploading final video...")
+    status = await message.reply_text("📤 Re-sending video with new thumbnail...")
 
     await client.send_video(
         chat_id=message.chat.id,
-        video=output_video,
-        caption=caption
+        video=media.file_id,
+        caption=caption,
+        thumb=THUMB_FILE_ID,
+        file_name=new_name
     )
 
-    await status.edit("✅ Video processed & sent back")
-
-    os.remove(input_video)
-    os.remove(output_video)
+    await status.edit_text("✅ Video processed & sent back")
 
 # =======================
 # START
 # =======================
-print("🤖 Anime Qualifier Bot (FFmpeg Burn Mode) LIVE")
+print("🤖 Anime Qualifier Bot is LIVE (NO BURN MODE)")
 app.run()
