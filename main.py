@@ -1,6 +1,6 @@
 import os
 import re
-import asyncio
+import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -16,6 +16,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # =======================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
+
 THUMB_PATH = "thumb.jpg"
 
 # =======================
@@ -31,38 +32,36 @@ app = Client(
 # =======================
 # HELPERS
 # =======================
-def is_owner(uid: int) -> bool:
-    return uid in OWNERS
+def determine_quality(name: str):
+    up = name.upper()
+    if "2160" in up or "4K" in up:
+        return "2k"
+    if "1080" in up:
+        return "1080p"
+    if "720" in up:
+        return "720p"
+    return "480p"
 
 
-def parse_video_filename(name: str):
+def parse_filename(name: str):
     up = name.upper()
 
-    anime = "Jujutsu Kaisen" if "JUJUTSU" in up else "Unknown"
-
+    anime = "Jujutsu Kaisen"
     season, episode = "01", "01"
+
     m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
     if m:
         season, episode = m.group(1), m.group(2)
-
-    quality = "480p"
-    if "2160" in up or "4K" in up:
-        quality = "2k"
-    elif "1080" in up:
-        quality = "1080p"
-    elif "720" in up:
-        quality = "720p"
 
     return {
         "anime": anime,
         "season": f"{int(season):02d}",
         "episode": f"{int(episode):02d}",
-        "quality": quality
+        "quality": determine_quality(name)
     }
 
 
-def build_caption(i: dict) -> str:
-    # BOLD + EXACT FORMAT (as you asked)
+def build_caption(i):
     return (
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
@@ -75,7 +74,7 @@ def build_caption(i: dict) -> str:
     )
 
 
-def build_filename(i: dict) -> str:
+def build_filename(i):
     return (
         f"{i['anime']} Season {i['season']} "
         f"Episode {i['episode']} "
@@ -85,81 +84,69 @@ def build_filename(i: dict) -> str:
 # =======================
 # COMMANDS
 # =======================
-@app.on_message(filters.command("ping"))
-async def ping(_, m: Message):
-    await m.reply_text("✅ Anime Qualifier Bot is alive")
-
-
 @app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(client: Client, m: Message):
-    if not is_owner(m.from_user.id):
+async def set_thumb(_, m: Message):
+    if m.from_user.id not in OWNERS:
         return
 
     if not m.reply_to_message.photo:
-        return await m.reply_text("❌ Photo ko reply karke /set_thumb bhejo")
+        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
 
-    # Download thumbnail locally (IMPORTANT FIX)
-    await client.download_media(
-        m.reply_to_message.photo,
-        file_name=THUMB_PATH
-    )
+    await m.reply_to_message.download(THUMB_PATH)
+    await m.reply("✅ Thumbnail saved (burn mode)")
 
-    await m.reply_text("✅ Thumbnail set successfully (local)")
-
-
-@app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m: Message):
-    if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
-    else:
-        await m.reply_text("❌ Thumbnail set nahi hai")
+@app.on_message(filters.command("ping"))
+async def ping(_, m):
+    await m.reply("✅ Bot alive (ffmpeg mode)")
 
 # =======================
-# MAIN VIDEO HANDLER
+# MAIN HANDLER
 # =======================
 @app.on_message(filters.video | filters.document)
-async def handle_video(client: Client, message: Message):
-    if not message.from_user or not is_owner(message.from_user.id):
+async def process_video(client, message: Message):
+    if message.from_user.id not in OWNERS:
         return
 
     media = message.video or message.document
     if not media:
         return
 
-    info = parse_video_filename(media.file_name or "video.mp4")
+    status = await message.reply("⬇️ Downloading video...")
+
+    input_video = await message.download()
+    info = parse_filename(media.file_name or "video.mp4")
+
+    output_video = build_filename(info)
     caption = build_caption(info)
-    new_name = build_filename(info)
 
-    status = await message.reply_text("⬆️ Uploading… 0%")
-    last_percent = -1
+    await status.edit("🎨 Applying thumbnail (burning)...")
 
-    async def progress(current, total):
-        nonlocal last_percent
-        if total == 0:
-            return
-        percent = int(current * 100 / total)
-        # IMPORTANT: spam & MESSAGE_NOT_MODIFIED fix
-        if percent != last_percent and percent % 5 == 0:
-            last_percent = percent
-            try:
-                await status.edit_text(f"⬆️ Uploading… {percent}%")
-            except:
-                pass
+    # FFmpeg command
+    subprocess.run([
+        "ffmpeg",
+        "-y",
+        "-i", input_video,
+        "-i", THUMB_PATH,
+        "-filter_complex", "overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2",
+        "-c:a", "copy",
+        output_video
+    ], check=True)
 
-    # Send back to SAME CHAT (bot resend)
+    await status.edit("⬆️ Uploading final video...")
+
     await client.send_video(
         chat_id=message.chat.id,
-        video=media.file_id,
-        caption=caption,
-        thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-        file_name=new_name,
-        progress=progress
+        video=output_video,
+        caption=caption
     )
 
-    await status.edit_text("✅ Video processed & sent back")
+    await status.edit("✅ Video processed & sent back")
+
+    os.remove(input_video)
+    os.remove(output_video)
 
 # =======================
 # START
 # =======================
-print("🤖 Anime Qualifier Bot is LIVE")
+print("🤖 Anime Qualifier Bot (FFmpeg Burn Mode) LIVE")
 app.run()
