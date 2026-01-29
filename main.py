@@ -17,9 +17,15 @@ QUEUE = defaultdict(lambda: defaultdict(list))
 QUEUE_MSGS = defaultdict(list)
 WORKERS = set()
 
-app = Client("anime_qualifier_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "anime_qualifier_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
-def is_owner(uid): return uid in OWNERS
+def is_owner(uid):
+    return uid in OWNERS
 
 def normalize_anime(name: str) -> str:
     name = name.replace("_", " ").replace(".", " ")
@@ -90,8 +96,10 @@ async def worker(client, chat_id, key):
     msgs = QUEUE_MSGS.pop(key, [])
 
     for mid in msgs:
-        try: await client.delete_messages(chat_id, mid)
-        except: pass
+        try:
+            await client.delete_messages(chat_id, mid)
+        except:
+            pass
 
     for ep in sorted(episodes, key=lambda x: int(x)):
         items = episodes[ep]
@@ -99,7 +107,10 @@ async def worker(client, chat_id, key):
 
         for it in items:
             i = it["info"]
-            status = await client.send_message(chat_id, f"📤 Uploading E{i['episode']} [{i['quality']}]")
+            status = await client.send_message(
+                chat_id,
+                f"📤 Uploading Episode {i['episode']} [{i['quality']}]"
+            )
 
             await client.send_video(
                 chat_id,
@@ -111,6 +122,7 @@ async def worker(client, chat_id, key):
                 progress=progress,
                 progress_args=(status,)
             )
+
             await status.delete()
 
     WORKERS.discard(key)
@@ -136,12 +148,17 @@ async def handle(client, m: Message):
     key = (info["anime"], info["season"])
     QUEUE[key][info["episode"]].append({"media": media, "info": info})
 
-    r = await m.reply(f"📥 Added to queue:\n**{info['anime']} S{info['season']}E{info['episode']} [{info['quality']}]**")
-    QUEUE_MSGS[key].append(r.message_id)
+    r = await m.reply(
+        f"📥 Added to queue:\n"
+        f"**{info['anime']} S{info['season']}E{info['episode']} [{info['quality']}]**"
+    )
+
+    # ✅ FIXED HERE
+    QUEUE_MSGS[key].append(r.id)
 
     if key not in WORKERS:
         WORKERS.add(key)
         asyncio.create_task(worker(client, m.chat.id, key))
 
-print("🤖 Anime Qualifier Bot — STABLE BUILD LIVE")
+print("🤖 Anime Qualifier Bot — FINAL STABLE BUILD LIVE")
 app.run()
