@@ -20,17 +20,46 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
+# persistent thumbnail
 THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
-THUMB_PATH = "/app/custom_thumb.jpg"
 
-QUEUE = defaultdict(list)
-QUEUE_LOCKS = defaultdict(asyncio.Lock)
+# master queue: {(anime, season): {episode: [items]}}
+QUEUE = defaultdict(lambda: defaultdict(list))
+QUEUE_LOCK = defaultdict(asyncio.Lock)
 
 QUALITY_ORDER = {
     "480p": 1,
     "720p": 2,
     "1080p": 3,
     "2k": 4
+}
+
+# =======================
+# OVERALL EPISODE OFFSETS
+# =======================
+SEASON_OFFSETS = {
+    1: 0,    # S1 -> 001
+    2: 24,   # S2 -> 025
+    3: 47,   # S3 -> 048
+    4: 59    # S4 -> 060
+}
+
+# =======================
+# EPISODE TITLES (JJK)
+# =======================
+EPISODE_TITLES = {
+    1: {
+        1: "Ryomen Sukuna",
+        2: "For Myself",
+        3: "Girl of Steel",
+        4: "Curse Womb Must Die",
+        5: "Curse Womb Must Die – II",
+        24: "Accomplices"
+    },
+    2: {
+        1: "Hidden Inventory",
+        2: "Hidden Inventory – II"
+    }
 }
 
 # =======================
@@ -66,10 +95,10 @@ def parse_video_filename(filename: str):
     anime_raw = re.split(r"S\d+E\d+", filename, flags=re.I)[0]
     anime = clean_anime_name(anime_raw)
 
-    s, e = "01", "01"
+    season, episode = 1, 1
     m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
     if m:
-        s, e = m.group(1), m.group(2)
+        season, episode = int(m.group(1)), int(m.group(2))
 
     quality = "480p"
     if "2160" in up or "4K" in up:
@@ -79,20 +108,30 @@ def parse_video_filename(filename: str):
     elif "720" in up:
         quality = "720p"
 
+    overall = SEASON_OFFSETS.get(season, 0) + episode
+
+    title = EPISODE_TITLES.get(season, {}).get(episode)
+
     return {
         "anime": anime,
-        "season": f"{int(s):02d}",
-        "episode": f"{int(e):02d}",
-        "quality": quality
+        "season": season,
+        "episode": episode,
+        "overall": overall,
+        "quality": quality,
+        "title": title
     }
 
 
 def build_caption(i: dict) -> str:
+    ep_line = f"{i['episode']:02d}({i['overall']:03d})"
+    if i["title"]:
+        ep_line += f" – {i['title']}"
+
     return (
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ **Season : {i['season']}**\n"
-        f"┃ **Episode : {i['episode']}**\n"
+        f"┃ **Season : {i['season']:02d}**\n"
+        f"┃ **Episode : {ep_line}**\n"
         f"┃ **Audio : Hindi #Official**\n"
         f"┃ **Quality : {i['quality']}**\n"
         f"┗━━━━━━━━━━━━━━━━━━┛\n"
@@ -102,8 +141,8 @@ def build_caption(i: dict) -> str:
 
 def build_filename(i: dict) -> str:
     return (
-        f"{i['anime']} Season {i['season']} "
-        f"Episode {i['episode']} "
+        f"{i['anime']} Season {i['season']:02d} "
+        f"Episode {i['episode']:02d}({i['overall']:03d}) "
         f"[{i['quality']}] {UPLOAD_TAG}.mp4"
     )
 
@@ -111,33 +150,27 @@ def build_filename(i: dict) -> str:
 # COMMANDS
 # =======================
 @app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(client, m: Message):
+async def set_thumb(_, m: Message):
     global THUMB_FILE_ID
-
     if not is_owner(m.from_user.id):
         return
-
     if not m.reply_to_message.photo:
         return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
 
-    photo = m.reply_to_message.photo
-    await client.download_media(photo.file_id, THUMB_PATH)
-
-    THUMB_FILE_ID = photo.file_id
+    THUMB_FILE_ID = m.reply_to_message.photo.file_id
     os.environ["THUMB_FILE_ID"] = THUMB_FILE_ID
-
-    await m.reply("✅ Thumbnail set successfully (persistent + local)")
+    await m.reply("✅ Thumbnail set successfully (persistent)")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+    if THUMB_FILE_ID:
+        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
     else:
         await m.reply("❌ Thumbnail set nahi hai")
 
 # =======================
-# QUEUE HANDLER
+# MAIN HANDLER
 # =======================
 @app.on_message(filters.video | filters.document)
 async def handle_video(client, message: Message):
@@ -149,9 +182,9 @@ async def handle_video(client, message: Message):
         return
 
     info = parse_video_filename(media.file_name or "video.mp4")
-    key = (info["anime"], info["season"], info["episode"])
+    key = (info["anime"], info["season"])
 
-    QUEUE[key].append({
+    QUEUE[key][info["episode"]].append({
         "message": message,
         "media": media,
         "info": info
@@ -159,45 +192,47 @@ async def handle_video(client, message: Message):
 
     await message.reply(
         f"📥 Added to queue:\n"
-        f"**{info['anime']} S{info['season']}E{info['episode']} [{info['quality']}]**"
+        f"**{info['anime']} S{info['season']:02d}E{info['episode']:02d} [{info['quality']}]**"
     )
 
-    async with QUEUE_LOCKS[key]:
-        await asyncio.sleep(2)
+    async with QUEUE_LOCK[key]:
+        await asyncio.sleep(3)
 
-        items = QUEUE.pop(key, [])
-        if not items:
+        episodes = QUEUE.pop(key, {})
+        if not episodes:
             return
 
-        items.sort(key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
+        for ep in sorted(episodes.keys()):
+            items = episodes[ep]
+            items.sort(key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
 
-        for item in items:
-            i = item["info"]
-            caption = build_caption(i)
-            filename = build_filename(i)
+            for item in items:
+                i = item["info"]
+                caption = build_caption(i)
+                filename = build_filename(i)
 
-            tmp_dir = tempfile.mkdtemp()
-            video_path = os.path.join(tmp_dir, filename)
+                tmp_dir = tempfile.mkdtemp()
+                video_path = os.path.join(tmp_dir, filename)
 
-            await item["message"].download(video_path)
+                await item["message"].download(video_path)
 
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=video_path,
-                caption=caption,
-                thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                file_name=filename,
-                supports_streaming=True
-            )
+                await client.send_video(
+                    chat_id=message.chat.id,
+                    video=video_path,
+                    caption=caption,
+                    thumb=THUMB_FILE_ID,
+                    file_name=filename,
+                    supports_streaming=True
+                )
 
-            try:
-                os.remove(video_path)
-                os.rmdir(tmp_dir)
-            except:
-                pass
+                try:
+                    os.remove(video_path)
+                    os.rmdir(tmp_dir)
+                except:
+                    pass
 
 # =======================
 # START
 # =======================
-print("🤖 Anime Qualifier Bot FINAL FIXED is LIVE")
+print("🤖 Anime Qualifier Bot — FINAL PRODUCTION BUILD LIVE")
 app.run()
