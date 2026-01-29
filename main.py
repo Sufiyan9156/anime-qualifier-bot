@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -15,7 +16,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # =======================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
-THUMB_FILE_ID = None
+THUMB_PATH = "thumb.jpg"
 
 # =======================
 # BOT
@@ -30,14 +31,14 @@ app = Client(
 # =======================
 # HELPERS
 # =======================
-def is_owner(uid):
+def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
 
 def parse_video_filename(name: str):
     up = name.upper()
 
-    anime = "JUJUTSU KAISEN" if "JUJUTSU" in up else "UNKNOWN"
+    anime = "Jujutsu Kaisen" if "JUJUTSU" in up else "Unknown"
 
     season, episode = "01", "01"
     m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
@@ -53,27 +54,28 @@ def parse_video_filename(name: str):
         quality = "720p"
 
     return {
-        "anime": anime.title(),
+        "anime": anime,
         "season": f"{int(season):02d}",
         "episode": f"{int(episode):02d}",
         "quality": quality
     }
 
 
-def build_caption(i):
+def build_caption(i: dict) -> str:
+    # BOLD + EXACT FORMAT (as you asked)
     return (
-        f"<b>⬡ {i['anime']}</b>\n"
-        f"<b>┏━━━━━━━━━━━━━━━━━━┓</b>\n"
-        f"<b>┃ Season : {i['season']}</b>\n"
-        f"<b>┃ Episode : {i['episode']}</b>\n"
-        f"<b>┃ Audio : Hindi #Official</b>\n"
-        f"<b>┃ Quality : {i['quality']}</b>\n"
-        f"<b>┗━━━━━━━━━━━━━━━━━━┛</b>\n"
-        f"<b>⬡ Uploaded By {UPLOAD_TAG}</b>"
+        f"⬡ **{i['anime']}**\n"
+        f"┏━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃ **Season : {i['season']}**\n"
+        f"┃ **Episode : {i['episode']}**\n"
+        f"┃ **Audio : Hindi #Official**\n"
+        f"┃ **Quality : {i['quality']}**\n"
+        f"┗━━━━━━━━━━━━━━━━━━┛\n"
+        f"⬡ **Uploaded By {UPLOAD_TAG}**"
     )
 
 
-def build_filename(i):
+def build_filename(i: dict) -> str:
     return (
         f"{i['anime']} Season {i['season']} "
         f"Episode {i['episode']} "
@@ -84,33 +86,39 @@ def build_filename(i):
 # COMMANDS
 # =======================
 @app.on_message(filters.command("ping"))
-async def ping(_, m):
+async def ping(_, m: Message):
     await m.reply_text("✅ Anime Qualifier Bot is alive")
 
 
 @app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(_, m: Message):
-    global THUMB_FILE_ID
+async def set_thumb(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
+
     if not m.reply_to_message.photo:
-        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    await m.reply("✅ Thumbnail set successfully")
+        return await m.reply_text("❌ Photo ko reply karke /set_thumb bhejo")
+
+    # Download thumbnail locally (IMPORTANT FIX)
+    await client.download_media(
+        m.reply_to_message.photo,
+        file_name=THUMB_PATH
+    )
+
+    await m.reply_text("✅ Thumbnail set successfully (local)")
 
 
 @app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m):
-    if THUMB_FILE_ID:
-        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
+async def view_thumb(_, m: Message):
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
     else:
-        await m.reply("❌ Thumbnail nahi hai")
+        await m.reply_text("❌ Thumbnail set nahi hai")
 
 # =======================
-# MAIN HANDLER (DOWNLOAD → UPLOAD)
+# MAIN VIDEO HANDLER
 # =======================
 @app.on_message(filters.video | filters.document)
-async def handle_video(client, message: Message):
+async def handle_video(client: Client, message: Message):
     if not message.from_user or not is_owner(message.from_user.id):
         return
 
@@ -122,32 +130,33 @@ async def handle_video(client, message: Message):
     caption = build_caption(info)
     new_name = build_filename(info)
 
-    status = await message.reply("⬇️ Downloading… 0%")
+    status = await message.reply_text("⬆️ Uploading… 0%")
+    last_percent = -1
 
-    # DOWNLOAD
-    local_path = await client.download_media(
-        media,
-        progress=lambda c, t: status.edit_text(
-            f"⬇️ Downloading… {int(c * 100 / t)}%"
-        )
-    )
+    async def progress(current, total):
+        nonlocal last_percent
+        if total == 0:
+            return
+        percent = int(current * 100 / total)
+        # IMPORTANT: spam & MESSAGE_NOT_MODIFIED fix
+        if percent != last_percent and percent % 5 == 0:
+            last_percent = percent
+            try:
+                await status.edit_text(f"⬆️ Uploading… {percent}%")
+            except:
+                pass
 
-    await status.edit("⬆️ Uploading… 0%")
-
-    # UPLOAD WITH THUMB + RENAME
+    # Send back to SAME CHAT (bot resend)
     await client.send_video(
         chat_id=message.chat.id,
-        video=local_path,
+        video=media.file_id,
         caption=caption,
-        thumb=THUMB_FILE_ID,
+        thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
         file_name=new_name,
-        parse_mode="html",
-        progress=lambda c, t: status.edit_text(
-            f"⬆️ Uploading… {int(c * 100 / t)}%"
-        )
+        progress=progress
     )
 
-    await status.edit("✅ Video processed & sent back")
+    await status.edit_text("✅ Video processed & sent back")
 
 # =======================
 # START
