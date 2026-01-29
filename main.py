@@ -1,10 +1,11 @@
 import os
 import re
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # =======================
-# ENV (Railway)
+# ENV
 # =======================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -16,7 +17,9 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
-THUMB_FILE_ID = None  # runtime (fast, safe)
+THUMB_FILE_ID = None
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # =======================
 # BOT
@@ -31,14 +34,14 @@ app = Client(
 # =======================
 # HELPERS
 # =======================
-def is_owner(uid: int) -> bool:
+def is_owner(uid):
     return uid in OWNERS
 
 
 def parse_video_filename(name: str):
     up = name.upper()
 
-    anime = "Jujutsu Kaisen" if "JUJUTSU" in up else "Unknown"
+    anime = "JUJUTSU KAISEN" if "JUJUTSU" in up else "UNKNOWN"
 
     season, episode = "01", "01"
     m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
@@ -54,14 +57,14 @@ def parse_video_filename(name: str):
         quality = "720p"
 
     return {
-        "anime": anime,
+        "anime": anime.title(),
         "season": f"{int(season):02d}",
         "episode": f"{int(episode):02d}",
         "quality": quality
     }
 
 
-def build_caption(i: dict) -> str:
+def build_caption(i):
     return (
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
@@ -74,7 +77,7 @@ def build_caption(i: dict) -> str:
     )
 
 
-def build_filename(i: dict) -> str:
+def build_filename(i):
     return (
         f"{i['anime']} Season {i['season']} "
         f"Episode {i['episode']} "
@@ -85,36 +88,35 @@ def build_filename(i: dict) -> str:
 # COMMANDS
 # =======================
 @app.on_message(filters.command("ping"))
-async def ping(_, m: Message):
+async def ping(_, m):
     await m.reply_text("✅ Anime Qualifier Bot is alive")
 
 
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
     global THUMB_FILE_ID
-
     if not is_owner(m.from_user.id):
         return
 
     if not m.reply_to_message.photo:
-        return await m.reply_text("❌ Photo ko reply karke /set_thumb bhejo")
+        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
 
     THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    await m.reply_text("✅ Thumbnail set successfully")
+    await m.reply("✅ Thumbnail set successfully")
 
 
 @app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m: Message):
+async def view_thumb(_, m):
     if THUMB_FILE_ID:
         await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
     else:
-        await m.reply_text("❌ Thumbnail set nahi hai")
+        await m.reply("❌ Thumbnail set nahi hai")
 
 # =======================
-# MAIN HANDLER (NO BURN)
+# MAIN HANDLER (FRESH UPLOAD)
 # =======================
 @app.on_message(filters.video | filters.document)
-async def handle_video(client: Client, message: Message):
+async def handle_video(client, message: Message):
     if not message.from_user or not is_owner(message.from_user.id):
         return
 
@@ -126,20 +128,34 @@ async def handle_video(client: Client, message: Message):
     caption = build_caption(info)
     new_name = build_filename(info)
 
-    status = await message.reply_text("📤 Re-sending video with new thumbnail...")
+    status = await message.reply("⬇️ Downloading video...")
+
+    file_path = await message.download(
+        file_name=os.path.join(DOWNLOAD_DIR, new_name),
+        progress=lambda c, t: asyncio.create_task(
+            status.edit_text(f"⬇️ Downloading... {int(c * 100 / t)}%")
+        )
+    )
+
+    await status.edit("⬆️ Uploading with custom thumbnail...")
 
     await client.send_video(
         chat_id=message.chat.id,
-        video=media.file_id,
+        video=file_path,
         caption=caption,
         thumb=THUMB_FILE_ID,
-        file_name=new_name
+        supports_streaming=True
     )
 
-    await status.edit_text("✅ Video processed & sent back")
+    await status.edit("✅ Video processed & sent back")
+
+    try:
+        os.remove(file_path)
+    except:
+        pass
 
 # =======================
 # START
 # =======================
-print("🤖 Anime Qualifier Bot is LIVE (NO BURN MODE)")
+print("🤖 Anime Qualifier Bot is LIVE (Fresh Upload Mode)")
 app.run()
