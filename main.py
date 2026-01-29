@@ -1,6 +1,5 @@
 import os
 import re
-import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -17,9 +16,14 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
-THUMB_FILE_ID = None
-DOWNLOAD_DIR = "downloads"
+BASE_DIR = os.getcwd()
+DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+THUMB_DIR = os.path.join(BASE_DIR, "thumbs")
+
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(THUMB_DIR, exist_ok=True)
+
+THUMB_PATH = os.path.join(THUMB_DIR, "current.jpg")
 
 # =======================
 # BOT
@@ -87,75 +91,65 @@ def build_filename(i):
 # =======================
 # COMMANDS
 # =======================
-@app.on_message(filters.command("ping"))
-async def ping(_, m):
-    await m.reply_text("✅ Anime Qualifier Bot is alive")
-
-
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
-    global THUMB_FILE_ID
     if not is_owner(m.from_user.id):
         return
 
     if not m.reply_to_message.photo:
         return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
 
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    await m.reply("✅ Thumbnail set successfully")
+    await m.reply_to_message.download(file_name=THUMB_PATH)
+    await m.reply("✅ Thumbnail set successfully (local)")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    if THUMB_FILE_ID:
-        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
     else:
         await m.reply("❌ Thumbnail set nahi hai")
 
 # =======================
-# MAIN HANDLER (FRESH UPLOAD)
+# MAIN HANDLER
 # =======================
 @app.on_message(filters.video | filters.document)
 async def handle_video(client, message: Message):
     if not message.from_user or not is_owner(message.from_user.id):
         return
 
-    media = message.video or message.document
-    if not media:
-        return
+    if not os.path.exists(THUMB_PATH):
+        return await message.reply("❌ Thumbnail set nahi hai")
 
+    media = message.video or message.document
     info = parse_video_filename(media.file_name or "video.mp4")
+
     caption = build_caption(info)
-    new_name = build_filename(info)
+    filename = build_filename(info)
+    filepath = os.path.join(DOWNLOAD_DIR, filename)
 
     status = await message.reply("⬇️ Downloading video...")
-
-    file_path = await message.download(
-        file_name=os.path.join(DOWNLOAD_DIR, new_name),
-        progress=lambda c, t: asyncio.create_task(
-            status.edit_text(f"⬇️ Downloading... {int(c * 100 / t)}%")
-        )
-    )
+    await message.download(file_name=filepath)
 
     await status.edit("⬆️ Uploading with custom thumbnail...")
 
     await client.send_video(
         chat_id=message.chat.id,
-        video=file_path,
+        video=filepath,
         caption=caption,
-        thumb=THUMB_FILE_ID,
+        thumb=THUMB_PATH,
         supports_streaming=True
     )
 
     await status.edit("✅ Video processed & sent back")
 
     try:
-        os.remove(file_path)
+        os.remove(filepath)
     except:
         pass
 
 # =======================
 # START
 # =======================
-print("🤖 Anime Qualifier Bot is LIVE (Fresh Upload Mode)")
+print("🤖 Anime Qualifier Bot is LIVE (Stable Fresh Upload)")
 app.run()
