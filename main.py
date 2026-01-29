@@ -21,6 +21,7 @@ OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
 THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
+THUMB_PATH = "/app/custom_thumb.jpg"
 
 QUEUE = defaultdict(list)
 QUEUE_LOCKS = defaultdict(asyncio.Lock)
@@ -110,22 +111,28 @@ def build_filename(i: dict) -> str:
 # COMMANDS
 # =======================
 @app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(_, m: Message):
+async def set_thumb(client, m: Message):
     global THUMB_FILE_ID
+
     if not is_owner(m.from_user.id):
         return
+
     if not m.reply_to_message.photo:
         return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
 
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
+    photo = m.reply_to_message.photo
+    await client.download_media(photo.file_id, THUMB_PATH)
+
+    THUMB_FILE_ID = photo.file_id
     os.environ["THUMB_FILE_ID"] = THUMB_FILE_ID
-    await m.reply("✅ Thumbnail set successfully (persistent)")
+
+    await m.reply("✅ Thumbnail set successfully (persistent + local)")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    if THUMB_FILE_ID:
-        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
     else:
         await m.reply("❌ Thumbnail set nahi hai")
 
@@ -178,7 +185,7 @@ async def handle_video(client, message: Message):
                 chat_id=message.chat.id,
                 video=video_path,
                 caption=caption,
-                thumb=THUMB_FILE_ID,
+                thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                 file_name=filename,
                 supports_streaming=True
             )
