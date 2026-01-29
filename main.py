@@ -17,7 +17,6 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # =======================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
-
 THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
 
 QUALITY_ORDER = {
@@ -27,8 +26,7 @@ QUALITY_ORDER = {
     "2k": 4
 }
 
-# Queue structure:
-# QUEUE[(anime, season)][episode] = [items...]
+# QUEUE[(anime, season)][episode] = [items]
 QUEUE = defaultdict(lambda: defaultdict(list))
 QUEUE_MSGS = defaultdict(list)
 LAST_UPLOAD_TIME = {}
@@ -51,23 +49,40 @@ def is_owner(uid: int) -> bool:
 
 
 def clean_anime_name(name: str) -> str:
-    name = name.upper()
+    name = name.replace("_", " ").upper()
+
+    # remove @tags
+    name = re.sub(r"@[\w\-.]+", "", name)
+
+    # remove brackets
     name = re.sub(r"\[.*?\]", "", name)
+
+    # remove SxxExx patterns
+    name = re.sub(r"S\d+\s*E\d+", "", name)
     name = re.sub(r"S\d+E\d+", "", name)
-    name = re.sub(r"\d{3,4}P", "", name)
-    name = re.sub(r"HINDI|ENG|DUAL|HDRIP|WEB[- ]?DL|MP4|MKV", "", name)
-    name = re.sub(r"\s+", " ", name)
-    return name.strip().title()
+
+    # remove junk words
+    name = re.sub(
+        r"\b(480P|720P|1080P|2160P|4K|HDRIP|WEB[- ]?DL|FHD|HD|SD|MP4|MKV|ANIME|WORLD|OFFIC|OFFICIAL)\b",
+        "",
+        name
+    )
+
+    name = re.sub(r"\s+", " ", name).strip()
+
+    # keep only first 4 words (safety)
+    return " ".join(name.title().split()[:4])
 
 
 def parse_video_filename(filename: str):
-    up = filename.upper()
+    fixed = filename.replace("_", " ")
+    up = fixed.upper()
 
-    anime_raw = re.split(r"S\d+E\d+", filename, flags=re.I)[0]
+    anime_raw = re.split(r"S\d+E\d+", fixed, flags=re.I)[0]
     anime = clean_anime_name(anime_raw)
 
     s, e = "01", "01"
-    m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
+    m = re.search(r"S(\d{1,2})\s*E(\d{1,3})", up)
     if m:
         s, e = m.group(1), m.group(2)
 
@@ -112,7 +127,8 @@ def build_filename(i: dict) -> str:
 # =======================
 async def progress_callback(current, total, status_msg):
     percent = current * 100 / total
-    bar = "▰" * int(percent // 10) + "▱" * (10 - int(percent // 10))
+    filled = int(percent // 10)
+    bar = "▰" * filled + "▱" * (10 - filled)
     try:
         await status_msg.edit(
             f"📤 Uploading...\n{bar} {percent:.1f}%"
@@ -145,8 +161,6 @@ async def auto_flush(client, chat_id, key):
 
         for item in items:
             i = item["info"]
-            caption = build_caption(i)
-            filename = build_filename(i)
 
             status = await client.send_message(
                 chat_id,
@@ -156,9 +170,9 @@ async def auto_flush(client, chat_id, key):
             await client.send_video(
                 chat_id=chat_id,
                 video=item["media"].file_id,
-                caption=caption,
+                caption=build_caption(i),
                 thumb=THUMB_FILE_ID,
-                file_name=filename,
+                file_name=build_filename(i),
                 supports_streaming=True,
                 progress=progress_callback,
                 progress_args=(status,)
@@ -222,5 +236,5 @@ async def handle_video(client, message: Message):
 # =======================
 # START
 # =======================
-print("🤖 Anime Qualifier Bot FINAL PRODUCTION is LIVE")
+print("🤖 Anime Qualifier Bot FINAL STABLE is LIVE")
 app.run()
