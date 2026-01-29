@@ -1,9 +1,7 @@
 import os
 import re
 import asyncio
-import tempfile
 from collections import defaultdict
-
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -20,12 +18,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
-# persistent thumbnail
 THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
-
-# master queue: {(anime, season): {episode: [items]}}
-QUEUE = defaultdict(lambda: defaultdict(list))
-QUEUE_LOCK = defaultdict(asyncio.Lock)
 
 QUALITY_ORDER = {
     "480p": 1,
@@ -34,33 +27,11 @@ QUALITY_ORDER = {
     "2k": 4
 }
 
-# =======================
-# OVERALL EPISODE OFFSETS
-# =======================
-SEASON_OFFSETS = {
-    1: 0,    # S1 -> 001
-    2: 24,   # S2 -> 025
-    3: 47,   # S3 -> 048
-    4: 59    # S4 -> 060
-}
-
-# =======================
-# EPISODE TITLES (JJK)
-# =======================
-EPISODE_TITLES = {
-    1: {
-        1: "Ryomen Sukuna",
-        2: "For Myself",
-        3: "Girl of Steel",
-        4: "Curse Womb Must Die",
-        5: "Curse Womb Must Die – II",
-        24: "Accomplices"
-    },
-    2: {
-        1: "Hidden Inventory",
-        2: "Hidden Inventory – II"
-    }
-}
+# Queue structure:
+# QUEUE[(anime, season)][episode] = [items...]
+QUEUE = defaultdict(lambda: defaultdict(list))
+QUEUE_MSGS = defaultdict(list)
+LAST_UPLOAD_TIME = {}
 
 # =======================
 # BOT
@@ -95,10 +66,10 @@ def parse_video_filename(filename: str):
     anime_raw = re.split(r"S\d+E\d+", filename, flags=re.I)[0]
     anime = clean_anime_name(anime_raw)
 
-    season, episode = 1, 1
+    s, e = "01", "01"
     m = re.search(r"S(\d{1,2})E(\d{1,3})", up)
     if m:
-        season, episode = int(m.group(1)), int(m.group(2))
+        s, e = m.group(1), m.group(2)
 
     quality = "480p"
     if "2160" in up or "4K" in up:
@@ -108,30 +79,20 @@ def parse_video_filename(filename: str):
     elif "720" in up:
         quality = "720p"
 
-    overall = SEASON_OFFSETS.get(season, 0) + episode
-
-    title = EPISODE_TITLES.get(season, {}).get(episode)
-
     return {
         "anime": anime,
-        "season": season,
-        "episode": episode,
-        "overall": overall,
-        "quality": quality,
-        "title": title
+        "season": f"{int(s):02d}",
+        "episode": f"{int(e):02d}",
+        "quality": quality
     }
 
 
 def build_caption(i: dict) -> str:
-    ep_line = f"{i['episode']:02d}({i['overall']:03d})"
-    if i["title"]:
-        ep_line += f" – {i['title']}"
-
     return (
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ **Season : {i['season']:02d}**\n"
-        f"┃ **Episode : {ep_line}**\n"
+        f"┃ **Season : {i['season']}**\n"
+        f"┃ **Episode : {i['episode']}**\n"
         f"┃ **Audio : Hindi #Official**\n"
         f"┃ **Quality : {i['quality']}**\n"
         f"┗━━━━━━━━━━━━━━━━━━┛\n"
@@ -141,10 +102,69 @@ def build_caption(i: dict) -> str:
 
 def build_filename(i: dict) -> str:
     return (
-        f"{i['anime']} Season {i['season']:02d} "
-        f"Episode {i['episode']:02d}({i['overall']:03d}) "
+        f"{i['anime']} Season {i['season']} "
+        f"Episode {i['episode']} "
         f"[{i['quality']}] {UPLOAD_TAG}.mp4"
     )
+
+# =======================
+# PROGRESS BAR
+# =======================
+async def progress_callback(current, total, status_msg):
+    percent = current * 100 / total
+    bar = "▰" * int(percent // 10) + "▱" * (10 - int(percent // 10))
+    try:
+        await status_msg.edit(
+            f"📤 Uploading...\n{bar} {percent:.1f}%"
+        )
+    except:
+        pass
+
+# =======================
+# AUTO FLUSH
+# =======================
+async def auto_flush(client, chat_id, key):
+    await asyncio.sleep(3)
+
+    if asyncio.get_event_loop().time() - LAST_UPLOAD_TIME.get(key, 0) < 3:
+        return
+
+    anime, season = key
+    episodes = QUEUE.pop(key, {})
+    msgs = QUEUE_MSGS.pop(key, [])
+
+    for mid in msgs:
+        try:
+            await client.delete_messages(chat_id, mid)
+        except:
+            pass
+
+    for ep in sorted(episodes.keys(), key=lambda x: int(x)):
+        items = episodes[ep]
+        items.sort(key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
+
+        for item in items:
+            i = item["info"]
+            caption = build_caption(i)
+            filename = build_filename(i)
+
+            status = await client.send_message(
+                chat_id,
+                f"📤 Uploading Episode {i['episode']} [{i['quality']}]..."
+            )
+
+            await client.send_video(
+                chat_id=chat_id,
+                video=item["media"].file_id,
+                caption=caption,
+                thumb=THUMB_FILE_ID,
+                file_name=filename,
+                supports_streaming=True,
+                progress=progress_callback,
+                progress_args=(status,)
+            )
+
+            await status.delete()
 
 # =======================
 # COMMANDS
@@ -185,54 +205,22 @@ async def handle_video(client, message: Message):
     key = (info["anime"], info["season"])
 
     QUEUE[key][info["episode"]].append({
-        "message": message,
         "media": media,
         "info": info
     })
 
-    await message.reply(
+    msg = await message.reply(
         f"📥 Added to queue:\n"
-        f"**{info['anime']} S{info['season']:02d}E{info['episode']:02d} [{info['quality']}]**"
+        f"**{info['anime']} S{info['season']}E{info['episode']} [{info['quality']}]**"
     )
 
-    async with QUEUE_LOCK[key]:
-        await asyncio.sleep(3)
+    QUEUE_MSGS[key].append(msg.message_id)
+    LAST_UPLOAD_TIME[key] = asyncio.get_event_loop().time()
 
-        episodes = QUEUE.pop(key, {})
-        if not episodes:
-            return
-
-        for ep in sorted(episodes.keys()):
-            items = episodes[ep]
-            items.sort(key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
-
-            for item in items:
-                i = item["info"]
-                caption = build_caption(i)
-                filename = build_filename(i)
-
-                tmp_dir = tempfile.mkdtemp()
-                video_path = os.path.join(tmp_dir, filename)
-
-                await item["message"].download(video_path)
-
-                await client.send_video(
-                    chat_id=message.chat.id,
-                    video=video_path,
-                    caption=caption,
-                    thumb=THUMB_FILE_ID,
-                    file_name=filename,
-                    supports_streaming=True
-                )
-
-                try:
-                    os.remove(video_path)
-                    os.rmdir(tmp_dir)
-                except:
-                    pass
+    asyncio.create_task(auto_flush(client, message.chat.id, key))
 
 # =======================
 # START
 # =======================
-print("🤖 Anime Qualifier Bot — FINAL PRODUCTION BUILD LIVE")
+print("🤖 Anime Qualifier Bot FINAL PRODUCTION is LIVE")
 app.run()
