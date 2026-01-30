@@ -1,7 +1,11 @@
 import os, re, asyncio, tempfile, shutil
 from collections import defaultdict
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -19,29 +23,19 @@ OVERALL_OFFSET = {"01": 0, "02": 24, "03": 47, "04": 59}
 QUEUE = defaultdict(lambda: defaultdict(list))
 ACTIVE = set()
 
-app = Client(
-    "anime_qualifier_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+app = Client("anime_qualifier_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ================= HELPERS =================
 def is_owner(uid): 
     return uid in OWNERS
 
-def normalize(name: str) -> str:
+def normalize(name):
     name = name.replace("_", " ").replace(".", " ")
     name = re.sub(r"@[\w\-_.]+|\[.*?\]|S\d+\s*E\d+.*", "", name, flags=re.I)
-    name = re.sub(
-        r"(480P|720P|1080P|2160P|4K|HDRIP|WEB|MP4|MKV|HINDI|DUAL)",
-        "",
-        name,
-        flags=re.I
-    )
+    name = re.sub(r"(480P|720P|1080P|2160P|4K|HDRIP|WEB|MP4|MKV|HINDI|DUAL)", "", name, flags=re.I)
     return re.sub(r"\s+", " ", name).strip().title()
 
-def parse_file(filename: str):
+def parse_file(filename):
     up = filename.upper()
     anime = normalize(filename)
 
@@ -51,12 +45,9 @@ def parse_file(filename: str):
         s, e = m.group(1), m.group(2)
 
     quality = "480p"
-    if "2160" in up or "4K" in up:
-        quality = "2k"
-    elif "1080" in up:
-        quality = "1080p"
-    elif "720" in up:
-        quality = "720p"
+    if "2160" in up or "4K" in up: quality = "2k"
+    elif "1080" in up: quality = "1080p"
+    elif "720" in up: quality = "720p"
 
     overall = OVERALL_OFFSET.get(f"{int(s):02d}", 0) + int(e)
 
@@ -81,89 +72,82 @@ def build_caption(i):
     )
 
 def build_filename(i):
-    return (
-        f"{i['anime']} Season {i['season']} "
-        f"Episode {i['episode']} ({i['overall']}) "
-        f"[{i['quality']}] {UPLOAD_TAG}.mp4"
-    )
+    return f"{i['anime']} Season {i['season']} Episode {i['episode']} ({i['overall']}) [{i['quality']}] {UPLOAD_TAG}.mp4"
 
-# ================= COMMANDS =================
-@app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(_, m: Message):
-    global THUMB_FILE_ID
+# ================= PREVIEW =================
+@app.on_message(filters.command("preview"))
+async def preview(_, m):
     if not is_owner(m.from_user.id):
         return
-    if not m.reply_to_message.photo:
-        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
 
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    os.environ["THUMB_FILE_ID"] = THUMB_FILE_ID
-    await m.reply("✅ Thumbnail saved (persistent)")
+    text = "📋 **Upload Preview**\n\n"
+    for (anime, season), eps in sorted(QUEUE.items()):
+        for ep in sorted(eps, key=lambda x: int(x)):
+            text += f"**{anime} S{season}E{ep}({eps[ep][0]['info']['overall']})**\n"
+            for it in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
+                text += f" • {it['info']['quality']}\n"
+            text += "\n"
 
-@app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m):
-    if THUMB_FILE_ID:
-        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
-    else:
-        await m.reply("❌ Thumbnail set nahi hai")
+    await m.reply(
+        text or "❌ Queue empty",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶️ Start Upload", callback_data="start")],
+            [InlineKeyboardButton("❌ Clear Queue", callback_data="clear")]
+        ])
+    )
+
+# ================= CALLBACKS =================
+@app.on_callback_query()
+async def cb(client, q):
+    if q.data == "clear":
+        QUEUE.clear()
+        await q.message.edit("❌ Queue cleared")
+
+    elif q.data == "start":
+        await q.message.edit("🚀 Upload started...")
+        asyncio.create_task(worker(client, q.message.chat.id, list(QUEUE.keys())[0]))
 
 # ================= WORKER =================
 async def worker(client, chat_id, key):
-    await asyncio.sleep(3)
-    episodes = QUEUE.pop(key, {})
+    episodes = QUEUE.pop(key)
 
     for ep in sorted(episodes, key=lambda x: int(x)):
-        items = sorted(
-            episodes[ep],
-            key=lambda x: QUALITY_ORDER[x["info"]["quality"]]
-        )
+        items = sorted(episodes[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
 
         for it in items:
             i = it["info"]
-
             tmp = tempfile.mkdtemp()
-            video_path = os.path.join(tmp, build_filename(i))
-            thumb_path = None
+            vpath = os.path.join(tmp, build_filename(i))
+            tpath = None
 
-            await it["msg"].download(video_path)
+            await it["msg"].download(vpath)
 
             if THUMB_FILE_ID:
-                thumb_path = os.path.join(tmp, "thumb.jpg")
-                await client.download_media(THUMB_FILE_ID, thumb_path)
+                tpath = os.path.join(tmp, "thumb.jpg")
+                await client.download_media(THUMB_FILE_ID, tpath)
 
             await client.send_video(
                 chat_id,
-                video_path,
+                vpath,
                 caption=build_caption(i),
                 file_name=build_filename(i),
-                thumb=thumb_path,
+                thumb=tpath,
                 supports_streaming=True
             )
 
             shutil.rmtree(tmp)
 
-    ACTIVE.discard(key)
-
-# ================= MAIN HANDLER =================
+# ================= MAIN =================
 @app.on_message(filters.video | filters.document)
-async def handle(client, m: Message):
+async def handle(_, m):
     if not m.from_user or not is_owner(m.from_user.id):
         return
 
-    media = m.video or m.document
-    info = parse_file(media.file_name or "video.mp4")
-
+    info = parse_file((m.video or m.document).file_name or "video.mp4")
     key = (info["anime"], info["season"])
     QUEUE[key][info["episode"]].append({"msg": m, "info": info})
 
-    await m.reply(
-        f"📥 Added to queue:\n"
-        f"**{info['anime']} S{info['season']}E{info['episode']}({info['overall']}) [{info['quality']}]**"
-    )
+    await m.reply(f"📥 Added: {info['anime']} E{info['episode']}({info['overall']}) [{info['quality']}]")
 
-    if key not in ACTIVE:
-        ACTIVE.add(key)
-        asyncio.create_task(worker(client, m.chat.id, key))
-
-print("🤖 Anime Qualifier Bot — FINAL STABLE & BULK READY")
+print("🤖 Anime Qualifier Bot — BATCH MODE READY")
 app.run()
