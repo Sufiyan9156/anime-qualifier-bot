@@ -1,101 +1,53 @@
-import os, re, asyncio, tempfile, shutil, time
-from collections import defaultdict
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-
-# ================= ENV =================
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-
-THUMB_PATH = "thumb.jpg"   # local persistent thumb
+import os, re, asyncio, tempfile
+from telethon import TelegramClient, events
+from telethon.tl.types import DocumentAttributeVideo
 
 # ================= CONFIG =================
-OWNERS = {709844068, 6593273878}
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+
+SESSION = "session"  # user session
 UPLOAD_TAG = "@SenpaiAnimess"
+OWNER_ID = 709844068
 
-QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
-QUEUE = defaultdict(lambda: defaultdict(list))
-ACTIVE = False
+THUMB_PATH = "thumb.jpg"
 
-app = Client(
-    "anime_qualifier_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+client = TelegramClient(SESSION, API_ID, API_HASH)
 
-# ================= PROGRESS =================
-async def progress(current, total, msg, start, label):
-    if total == 0:
-        return
-    percent = int(current * 100 / total)
-    speed = current / max(1, time.time() - start)
-    try:
-        await msg.edit(
-            f"{label}\n"
-            f"{percent}% | {speed/1024/1024:.2f} MB/s"
-        )
-    except:
-        pass
+# ================= SMART PARSER =================
+def parse_filename(name: str):
+    original = name.replace("_", " ").replace(".", " ")
 
-# ================= HELPERS =================
-def is_owner(uid):
-    return uid in OWNERS
-
-def clean_anime_name(name: str):
-    name = name.replace("_", " ").replace(".", " ")
-    name = re.sub(r"\[.*?\]|\(.*?\)", " ", name)
-
-    REMOVE = [
-        "mp4","mkv","avi","hd","fhd","uhd","sd",
-        "hindi","dual","multi","audio","official",
-        "world","web","hdrip","bluray"
-    ]
-
-    for r in REMOVE:
-        name = re.sub(rf"\b{r}\b", " ", name, flags=re.I)
-
-    name = re.sub(r"S\d+E\d+|SEASON\s*\d+|EPISODE\s*\d+", " ", name, flags=re.I)
-    name = re.sub(r"@[\w_]+", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
-
-    return " ".join(name.split()[:3]).title()
-
-def extract_info(filename: str):
-    raw = filename.lower()
-
-    if re.search(r"(2160|4k|uhd)", raw):
+    # QUALITY
+    if re.search(r"(2160|4K)", original, re.I):
         quality = "2k"
-    elif re.search(r"(1080|fhd)", raw):
+    elif re.search(r"1080", original):
         quality = "1080p"
-    elif re.search(r"(720|hd)", raw):
+    elif re.search(r"720", original):
         quality = "720p"
     else:
         quality = "480p"
 
+    # SEASON / EP
     s, e = "01", "01"
-    m = re.search(r"s(\d{1,2})\s*e(\d{1,3})", raw)
+    m = re.search(r"S(\d{1,2}).*E(\d{1,3})", original, re.I)
     if m:
         s, e = m.group(1), m.group(2)
-    else:
-        m = re.search(r"episode\s*(\d{1,3})", raw)
-        if m:
-            e = m.group(1)
 
     season = f"{int(s):02d}"
     episode = f"{int(e):02d}"
     overall = f"{int(e):03d}"
 
-    anime = clean_anime_name(filename)
+    # CLEAN ANIME NAME (STRICT)
+    anime = re.sub(
+        r"(S\d+.*E\d+|EP\s*\d+|\d{3,4}P|HD|FHD|SD|HDRIP|WEB|HINDI|DUAL|MKV|MP4|\[.*?\]|@[\w_]+)",
+        "",
+        original,
+        flags=re.I
+    )
+    anime = re.sub(r"\s+", " ", anime).strip().title()
 
-    return {
-        "anime": anime,
-        "season": season,
-        "episode": episode,
-        "overall": overall,
-        "quality": quality
-    }
+    return anime, season, episode, overall, quality
 
 def build_filename(i):
     return (
@@ -116,109 +68,63 @@ def build_caption(i):
         f"⬡ **Uploaded By {UPLOAD_TAG}**"
     )
 
-# ================= THUMB =================
-@app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(_, m: Message):
-    if not is_owner(m.from_user.id):
+# ================= COMMANDS =================
+@client.on(events.NewMessage(from_users=OWNER_ID, pattern="/set_thumb"))
+async def set_thumb(e):
+    if not e.reply_to_msg_id:
+        await e.reply("❌ Reply to thumbnail image")
         return
-    if not m.reply_to_message.photo:
-        return await m.reply("❌ Photo reply karo")
 
-    await m.reply_to_message.download(THUMB_PATH)
-    await m.reply("✅ Thumbnail saved permanently")
+    msg = await e.get_reply_message()
+    if not msg.photo:
+        await e.reply("❌ Photo required")
+        return
 
-@app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m):
+    await client.download_media(msg.photo, THUMB_PATH)
+    await e.reply("✅ Thumbnail saved permanently")
+
+@client.on(events.NewMessage(from_users=OWNER_ID, pattern="/view_thumb"))
+async def view_thumb(e):
     if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+        await client.send_file(e.chat_id, THUMB_PATH, caption="🖼 Current Thumbnail")
     else:
-        await m.reply("❌ Thumbnail set nahi hai")
+        await e.reply("❌ Thumbnail not set")
 
-# ================= PREVIEW =================
-@app.on_message(filters.command("preview"))
-async def preview(_, m):
-    if not is_owner(m.from_user.id) or not QUEUE:
+# ================= MAIN HANDLER =================
+@client.on(events.NewMessage(from_users=OWNER_ID))
+async def handler(e):
+    if not e.file:
         return
 
-    text = "📋 **Upload Preview**\n\n"
-    for (anime, season), eps in QUEUE.items():
-        text += f"**{anime} – Season {season}**\n"
-        for ep in sorted(eps):
-            qs = ", ".join(x["info"]["quality"] for x in eps[ep])
-            text += f"Episode {ep} → {qs}\n"
-        text += "\n"
+    info = parse_filename(e.file.name or "video.mp4")
+    anime, season, episode, overall, quality = info
 
-    await m.reply(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("▶️ Start Upload", callback_data="start")]]
+    meta = {
+        "anime": anime,
+        "season": season,
+        "episode": episode,
+        "overall": overall,
+        "quality": quality
+    }
+
+    filename = build_filename(meta)
+    caption = build_caption(meta)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = await e.download_media(file=tmp)
+
+        await client.send_file(
+            e.chat_id,
+            path,
+            caption=caption,
+            file_name=filename,
+            thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+            attributes=[DocumentAttributeVideo(0, 0, 0, supports_streaming=True)]
         )
-    )
 
-# ================= CALLBACK =================
-@app.on_callback_query()
-async def cb(client, q):
-    global ACTIVE
-    if q.data == "start" and not ACTIVE:
-        ACTIVE = True
-        await q.message.edit("🚀 Upload started...")
-        asyncio.create_task(worker(client, q.message.chat.id))
+        await e.reply(f"✅ Uploaded:\n{filename}")
 
-# ================= WORKER =================
-async def worker(client, chat_id):
-    global ACTIVE
-    tmp = tempfile.mkdtemp()
-
-    for (_, _), eps in list(QUEUE.items()):
-        for ep in sorted(eps):
-            for it in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
-                i = it["info"]
-
-                status = await client.send_message(chat_id, "⬇️ Downloading...")
-                start = time.time()
-
-                vpath = os.path.join(tmp, build_filename(i))
-                await it["msg"].download(
-                    vpath,
-                    progress=progress,
-                    progress_args=(status, start, "⬇️ Downloading")
-                )
-
-                await client.send_video(
-                    chat_id,
-                    vpath,
-                    caption=build_caption(i),
-                    file_name=build_filename(i),
-                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                    supports_streaming=True,
-                    progress=progress,
-                    progress_args=(status, start, "⬆️ Uploading")
-                )
-
-                await status.delete()
-                os.remove(vpath)
-
-    shutil.rmtree(tmp)
-    QUEUE.clear()
-    ACTIVE = False
-    await client.send_message(chat_id, "✅ All uploads completed")
-
-# ================= MAIN =================
-@app.on_message(filters.video | filters.document)
-async def handle(_, m):
-    if not m.from_user or not is_owner(m.from_user.id):
-        return
-
-    info = extract_info((m.video or m.document).file_name or "video")
-    key = (info["anime"], info["season"])
-    QUEUE[key][info["episode"]].append({"msg": m, "info": info})
-
-    await m.reply(
-        f"📥 Added:\n"
-        f"**{info['anime']} Season {info['season']} "
-        f"Episode {info['episode']} ({info['overall']}) "
-        f"[{info['quality']}]**"
-    )
-
-print("🤖 Anime Qualifier Bot — FINAL REALISTIC STABLE BUILD")
-app.run()
+# ================= START =================
+print("🔥 Telethon Hybrid Anime Uploader — READY")
+client.start()
+client.run_until_disconnected()
