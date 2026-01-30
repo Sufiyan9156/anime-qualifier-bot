@@ -7,17 +7,23 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
+
+THUMB_PATH = "thumb.jpg"   # local persistent thumb
 
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
-QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
 
+QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
 QUEUE = defaultdict(lambda: defaultdict(list))
 ACTIVE = False
 
-app = Client("anime_qualifier_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "anime_qualifier_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
 # ================= PROGRESS =================
 async def progress(current, total, msg, start, label):
@@ -25,12 +31,11 @@ async def progress(current, total, msg, start, label):
         return
     percent = int(current * 100 / total)
     speed = current / max(1, time.time() - start)
-    text = (
-        f"{label}...\n"
-        f"{percent}% | {speed/1024/1024:.2f} MB/s"
-    )
     try:
-        await msg.edit(text)
+        await msg.edit(
+            f"{label}\n"
+            f"{percent}% | {speed/1024/1024:.2f} MB/s"
+        )
     except:
         pass
 
@@ -42,26 +47,24 @@ def clean_anime_name(name: str):
     name = name.replace("_", " ").replace(".", " ")
     name = re.sub(r"\[.*?\]|\(.*?\)", " ", name)
 
-    garbage = [
-        "mp4","mkv","avi","web","hdrip","bluray","webrip",
-        "hindi","dual","multi","audio","sub","official","world",
-        "hd","fhd","uhd","4k","2160p","1080p","720p","480p"
+    REMOVE = [
+        "mp4","mkv","avi","hd","fhd","uhd","sd",
+        "hindi","dual","multi","audio","official",
+        "world","web","hdrip","bluray"
     ]
 
-    for g in garbage:
-        name = re.sub(rf"\b{g}\b", " ", name, flags=re.I)
+    for r in REMOVE:
+        name = re.sub(rf"\b{r}\b", " ", name, flags=re.I)
 
     name = re.sub(r"S\d+E\d+|SEASON\s*\d+|EPISODE\s*\d+", " ", name, flags=re.I)
     name = re.sub(r"@[\w_]+", " ", name)
     name = re.sub(r"\s+", " ", name).strip()
 
-    words = name.split()
-    return " ".join(words[:4]).title()  # hard cap – no garbage
+    return " ".join(name.split()[:3]).title()
 
 def extract_info(filename: str):
     raw = filename.lower()
 
-    # QUALITY
     if re.search(r"(2160|4k|uhd)", raw):
         quality = "2k"
     elif re.search(r"(1080|fhd)", raw):
@@ -71,13 +74,12 @@ def extract_info(filename: str):
     else:
         quality = "480p"
 
-    # SEASON / EP
     s, e = "01", "01"
     m = re.search(r"s(\d{1,2})\s*e(\d{1,3})", raw)
     if m:
         s, e = m.group(1), m.group(2)
     else:
-        m = re.search(r"episode[\s\-]?(\d{1,3})", raw)
+        m = re.search(r"episode\s*(\d{1,3})", raw)
         if m:
             e = m.group(1)
 
@@ -117,11 +119,20 @@ def build_caption(i):
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
-    global THUMB_FILE_ID
     if not is_owner(m.from_user.id):
         return
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    await m.reply("✅ Thumbnail saved")
+    if not m.reply_to_message.photo:
+        return await m.reply("❌ Photo reply karo")
+
+    await m.reply_to_message.download(THUMB_PATH)
+    await m.reply("✅ Thumbnail saved permanently")
+
+@app.on_message(filters.command("view_thumb"))
+async def view_thumb(_, m):
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+    else:
+        await m.reply("❌ Thumbnail set nahi hai")
 
 # ================= PREVIEW =================
 @app.on_message(filters.command("preview"))
@@ -133,7 +144,7 @@ async def preview(_, m):
     for (anime, season), eps in QUEUE.items():
         text += f"**{anime} – Season {season}**\n"
         for ep in sorted(eps):
-            qs = ", ".join(q["info"]["quality"] for q in eps[ep])
+            qs = ", ".join(x["info"]["quality"] for x in eps[ep])
             text += f"Episode {ep} → {qs}\n"
         text += "\n"
 
@@ -158,38 +169,33 @@ async def worker(client, chat_id):
     global ACTIVE
     tmp = tempfile.mkdtemp()
 
-    for (anime, season), eps in list(QUEUE.items()):
+    for (_, _), eps in list(QUEUE.items()):
         for ep in sorted(eps):
             for it in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
                 i = it["info"]
-                msg = await client.send_message(chat_id, "⬇️ Downloading...")
+
+                status = await client.send_message(chat_id, "⬇️ Downloading...")
                 start = time.time()
 
                 vpath = os.path.join(tmp, build_filename(i))
                 await it["msg"].download(
                     vpath,
                     progress=progress,
-                    progress_args=(msg, start, "⬇️ Downloading")
+                    progress_args=(status, start, "⬇️ Downloading")
                 )
-
-                thumb = None
-                if THUMB_FILE_ID:
-                    thumb = os.path.join(tmp, "thumb.jpg")
-                    if not os.path.exists(thumb):
-                        await client.download_media(THUMB_FILE_ID, thumb)
 
                 await client.send_video(
                     chat_id,
                     vpath,
                     caption=build_caption(i),
                     file_name=build_filename(i),
-                    thumb=thumb,
+                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                     supports_streaming=True,
                     progress=progress,
-                    progress_args=(msg, start, "⬆️ Uploading")
+                    progress_args=(status, start, "⬆️ Uploading")
                 )
 
-                await msg.delete()
+                await status.delete()
                 os.remove(vpath)
 
     shutil.rmtree(tmp)
@@ -214,5 +220,5 @@ async def handle(_, m):
         f"[{info['quality']}]**"
     )
 
-print("🤖 Anime Qualifier Bot — SUPER FORMAT ENGINE READY")
+print("🤖 Anime Qualifier Bot — FINAL REALISTIC STABLE BUILD")
 app.run()
