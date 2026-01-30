@@ -4,7 +4,6 @@ import asyncio
 import tempfile
 import shutil
 
-from telethon import TelegramClient
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -12,15 +11,12 @@ from pyrogram.types import Message
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-STRING_SESSION = os.environ["STRING_SESSION"].strip()
 
 THUMB_PATH = "thumb.jpg"
 
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
-
-QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
 
 OVERALL_OFFSET = {
     "01": 0,
@@ -29,10 +25,8 @@ OVERALL_OFFSET = {
     "04": 59
 }
 
-# ================= CLIENTS =================
-user = TelegramClient(STRING_SESSION, API_ID, API_HASH)
-
-bot = Client(
+# ================= BOT =================
+app = Client(
     "anime_qualifier_bot",
     api_id=API_ID,
     api_hash=API_HASH,
@@ -40,7 +34,7 @@ bot = Client(
 )
 
 # ================= HELPERS =================
-def is_owner(uid):
+def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
 def extract_info(filename: str):
@@ -65,9 +59,7 @@ def extract_info(filename: str):
 
     season = f"{int(s):02d}"
     episode = f"{int(e):02d}"
-
-    offset = OVERALL_OFFSET.get(season, 0)
-    overall = f"{offset + int(e):03d}"
+    overall = f"{OVERALL_OFFSET.get(season, 0) + int(e):03d}"
 
     anime = re.sub(
         r"(S\d+E\d+|\d{3,4}P|4K|HINDI|DUAL|WEB|HDRIP|BLURAY|MP4|MKV|@[\w_]+)",
@@ -91,11 +83,11 @@ def caption(a, s, e, o, q):
         f"⬡ **Uploaded By {UPLOAD_TAG}**"
     )
 
-def fname(a, s, e, o, q):
+def filename(a, s, e, o, q):
     return f"{a} Season {s} Episode {e}({o}) [{q}] {UPLOAD_TAG}.mp4"
 
 # ================= THUMB =================
-@bot.on_message(filters.command("set_thumb") & filters.reply)
+@app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
@@ -105,25 +97,32 @@ async def set_thumb(_, m: Message):
     await m.reply_to_message.download(THUMB_PATH)
     await m.reply("✅ Thumbnail saved & will apply to all uploads")
 
+@app.on_message(filters.command("view_thumb"))
+async def view_thumb(_, m: Message):
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+    else:
+        await m.reply("❌ Thumbnail not set")
+
 # ================= MAIN =================
-@bot.on_message(filters.video | filters.document)
+@app.on_message(filters.video | filters.document)
 async def handle(_, m: Message):
-    if not is_owner(m.from_user.id):
+    if not m.from_user or not is_owner(m.from_user.id):
         return
 
     media = m.video or m.document
     anime, season, ep, overall, q = extract_info(media.file_name or "video")
 
     tmp = tempfile.mkdtemp()
-    path = os.path.join(tmp, fname(anime, season, ep, overall, q))
+    out_path = os.path.join(tmp, filename(anime, season, ep, overall, q))
 
-    await m.download(path)
+    await m.download(out_path)
 
-    await bot.send_video(
+    await app.send_video(
         chat_id=m.chat.id,
-        video=path,
+        video=out_path,
         caption=caption(anime, season, ep, overall, q),
-        file_name=os.path.basename(path),
+        file_name=os.path.basename(out_path),
         thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
         supports_streaming=True
     )
@@ -131,10 +130,5 @@ async def handle(_, m: Message):
     shutil.rmtree(tmp)
 
 # ================= RUN =================
-async def main():
-    await user.start()
-    await bot.start()
-    print("🤖 Anime Qualifier Bot — FINAL STABLE BUILD LIVE")
-    await asyncio.Event().wait()
-
-asyncio.run(main())
+print("🤖 Anime Qualifier Bot — STABLE & CRASH-FREE")
+app.run()
