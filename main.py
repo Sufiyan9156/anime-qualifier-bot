@@ -1,7 +1,11 @@
 import os, re, asyncio, tempfile, shutil
 from collections import defaultdict
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -12,10 +16,10 @@ THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
-
 QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
 
 QUEUE = defaultdict(lambda: defaultdict(list))
+ACTIVE = False
 
 app = Client(
     "anime_qualifier_bot",
@@ -35,12 +39,12 @@ def extract_info(filename: str):
     quality = "480p"
     if re.search(r"(2160|4K)", name, re.I):
         quality = "2k"
-    elif re.search(r"1080", name, re.I):
+    elif "1080" in name:
         quality = "1080p"
-    elif re.search(r"720", name, re.I):
+    elif "720" in name:
         quality = "720p"
 
-    # SEASON & EPISODE
+    # SEASON / EP
     s, e = "01", "01"
     m = re.search(r"S(\d{1,2})\s*E(\d{1,3})", name, re.I)
     if m:
@@ -50,9 +54,9 @@ def extract_info(filename: str):
     episode = f"{int(e):02d}"
     overall = f"{int(e):03d}"
 
-    # CLEAN ANIME NAME
+    # CLEAN NAME
     anime = re.sub(
-        r"(S\d+\s*E\d+|EPISODE\s*\d+|\d{3,4}P|SD|HDRIP|WEB|HINDI|DUAL|\[.*?\]|@[\w_]+)",
+        r"(S\d+\s*E\d+|\d{3,4}P|SD|HDRIP|WEB|HINDI|DUAL|\[.*?\]|@[\w_]+)",
         "",
         name,
         flags=re.I
@@ -111,7 +115,6 @@ async def view_thumb(_, m):
 async def preview(_, m):
     if not is_owner(m.from_user.id):
         return
-
     if not QUEUE:
         return await m.reply("❌ Queue empty")
 
@@ -119,57 +122,68 @@ async def preview(_, m):
     for (anime, season), eps in QUEUE.items():
         text += f"**{anime} – Season {season}**\n"
         for ep in sorted(eps):
-            text += f"Episode {ep} ({eps[ep][0]['info']['overall']})\n"
-            for it in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
-                text += f" • {it['info']['quality']}\n"
+            qs = ", ".join(
+                q["info"]["quality"]
+                for q in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
+            )
+            text += f"Episode {ep} ({eps[ep][0]['info']['overall']}) → {qs}\n"
         text += "\n"
 
     await m.reply(
         text,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ Start Upload", callback_data="start")]
-        ])
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("▶️ Start Upload", callback_data="start")]]
+        )
     )
 
 # ================= CALLBACK =================
 @app.on_callback_query()
-async def cb(client, q):
-    if q.data == "start":
-        key = list(QUEUE.keys())[0]
+async def callbacks(client, q):
+    global ACTIVE
+    if q.data == "start" and not ACTIVE:
+        ACTIVE = True
         await q.message.edit("🚀 Upload started...")
-        asyncio.create_task(worker(client, q.message.chat.id, key))
+        asyncio.create_task(worker(client, q.message.chat.id))
 
 # ================= WORKER =================
-async def worker(client, chat_id, key):
-    episodes = QUEUE.pop(key)
+async def worker(client, chat_id):
+    global ACTIVE
+    tmp = tempfile.mkdtemp()
 
-    for ep in sorted(episodes):
-        for it in sorted(episodes[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
-            i = it["info"]
-            tmp = tempfile.mkdtemp()
-            vpath = os.path.join(tmp, build_filename(i))
+    for (anime, season), eps in list(QUEUE.items()):
+        for ep in sorted(eps):
+            for it in sorted(
+                eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]
+            ):
+                i = it["info"]
+                vpath = os.path.join(tmp, build_filename(i))
+                await it["msg"].download(vpath)
 
-            await it["msg"].download(vpath)
+                thumb = None
+                if THUMB_FILE_ID:
+                    thumb = os.path.join(tmp, "thumb.jpg")
+                    if not os.path.exists(thumb):
+                        await client.download_media(THUMB_FILE_ID, thumb)
 
-            thumb = None
-            if THUMB_FILE_ID:
-                thumb = os.path.join(tmp, "thumb.jpg")
-                await client.download_media(THUMB_FILE_ID, thumb)
+                await client.send_video(
+                    chat_id,
+                    vpath,
+                    caption=build_caption(i),
+                    file_name=build_filename(i),
+                    thumb=thumb,
+                    supports_streaming=True
+                )
 
-            await client.send_video(
-                chat_id,
-                vpath,
-                caption=build_caption(i),
-                file_name=build_filename(i),
-                thumb=thumb,
-                supports_streaming=True
-            )
+                os.remove(vpath)
 
-            shutil.rmtree(tmp)
+    shutil.rmtree(tmp)
+    QUEUE.clear()
+    ACTIVE = False
+    await client.send_message(chat_id, "✅ All uploads completed")
 
 # ================= MAIN =================
 @app.on_message(filters.video | filters.document)
-async def handle(_, m: Message):
+async def handle(_, m):
     if not m.from_user or not is_owner(m.from_user.id):
         return
 
@@ -179,8 +193,10 @@ async def handle(_, m: Message):
 
     await m.reply(
         f"📥 Added:\n"
-        f"**{build_filename(info)}**"
+        f"**{info['anime']} Season {info['season']} "
+        f"Episode {info['episode']} ({info['overall']}) "
+        f"[{info['quality']}]**"
     )
 
-print("🤖 Anime Qualifier Bot — NAMING PERFECT BUILD")
+print("🤖 Anime Qualifier Bot — FINAL STABLE BUILD")
 app.run()
