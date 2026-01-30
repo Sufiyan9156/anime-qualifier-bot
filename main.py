@@ -1,14 +1,12 @@
 import os, re, asyncio, tempfile, shutil
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # ================= ENV =================
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-STRING_SESSION = os.getenv("STRING_SESSION")
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 THUMB_PATH = "thumb.jpg"
 
@@ -17,14 +15,11 @@ OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
 # ================= CLIENTS =================
+# 🔥 SQLite session (Railway safe)
 user = TelegramClient(
-    StringSession(STRING_SESSION),
+    "user",
     API_ID,
-    API_HASH,
-    device_model="Hybrid-Leech",
-    system_version="FastMode",
-    app_version="1.0",
-    flood_sleep_threshold=0
+    API_HASH
 )
 
 bot = Client(
@@ -41,7 +36,6 @@ def is_owner(uid):
 def extract_info(name: str):
     n = name.replace("_", " ").replace(".", " ").lower()
 
-    # quality
     if "2160" in n or "4k" in n:
         q = "2k"
     elif "1080" in n:
@@ -51,7 +45,6 @@ def extract_info(name: str):
     else:
         q = "480p"
 
-    # season / episode
     s, e = "01", "01"
     m = re.search(r"s(\d+)\s*e(\d+)", n)
     if m:
@@ -61,7 +54,6 @@ def extract_info(name: str):
     episode = f"{int(e):02d}"
     overall = f"{int(e):03d}"
 
-    # anime name clean
     anime = re.sub(
         r"(s\d+e\d+|\d{3,4}p|4k|hindi|dual|web|hdrip|bluray|@[\w_]+)",
         "",
@@ -75,13 +67,13 @@ def extract_info(name: str):
 def caption(a, s, e, o, q):
     return (
         f"⬡ **{a}**\n"
-        f"╭━━━━━━━━━━━━━━━━━━\n"
-        f"‣ Season : {s}\n"
-        f"‣ Episode : {e}({o})\n"
-        f"‣ Audio : Hindi #Official\n"
-        f"‣ Quality : {q}\n"
-        f"╰━━━━━━━━━━━━━━━━━━\n"
-        f"⬡ Uploaded By : {UPLOAD_TAG}"
+        f"┏━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃ **Season : {s}**\n"
+        f"┃ **Episode : {e}({o})**\n"
+        f"┃ **Audio : Hindi #Official**\n"
+        f"┃ **Quality : {q}**\n"
+        f"┗━━━━━━━━━━━━━━━━━━┛\n"
+        f"⬡ **Uploaded By {UPLOAD_TAG}**"
     )
 
 def fname(a, s, e, o, q):
@@ -92,7 +84,6 @@ def fname(a, s, e, o, q):
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
-
     if not m.reply_to_message.photo:
         return await m.reply("❌ Photo reply karke /set_thumb bhejo")
 
@@ -100,13 +91,13 @@ async def set_thumb(_, m: Message):
     await m.reply("✅ Thumbnail saved")
 
 @bot.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m: Message):
+async def view_thumb(_, m):
     if os.path.exists(THUMB_PATH):
         await m.reply_photo(THUMB_PATH)
     else:
         await m.reply("❌ Thumbnail not set")
 
-# ================= MAIN HANDLER =================
+# ================= MAIN =================
 @bot.on_message(filters.video | filters.document)
 async def handle(_, m: Message):
     if not is_owner(m.from_user.id):
@@ -118,26 +109,25 @@ async def handle(_, m: Message):
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, "input")
 
-    await m.reply("⬇️ Downloading (Fast Mode)…")
+    await m.reply("⬇️ Downloading fast…")
     await user.download_media(m, path)
 
     await bot.send_video(
-        chat_id=m.chat.id,
-        video=path,
+        m.chat.id,
+        path,
         caption=caption(a, s, e, o, q),
         file_name=fname(a, s, e, o, q),
         thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
         supports_streaming=True
     )
 
-    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(tmp)
 
 # ================= RUN =================
 async def main():
     await user.start()
     await bot.start()
-    print("🤖 BOT LIVE | FAST MODE ON")
+    print("🤖 BOT LIVE (RAILWAY SAFE)")
     await asyncio.Event().wait()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
