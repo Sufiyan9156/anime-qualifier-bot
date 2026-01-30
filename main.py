@@ -3,11 +3,13 @@ import asyncio
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-STRING_SESSION = os.getenv("STRING_SESSION")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ===== LOAD ENV =====
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+STRING_SESSION = os.environ["STRING_SESSION"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
+# ===== USER CLIENT (FAST) =====
 user = TelegramClient(
     StringSession(STRING_SESSION),
     API_ID,
@@ -18,16 +20,18 @@ user = TelegramClient(
     flood_sleep_threshold=0
 )
 
+# ===== BOT CLIENT =====
 bot = TelegramClient(
     "bot",
     API_ID,
     API_HASH
 ).start(bot_token=BOT_TOKEN)
 
+# ===== MAIN LOGIC =====
 async def main():
     me = await user.get_me()
-    print(f"⚡ USER READY : {me.first_name}")
-    print("🚀 SPEED MODE ENABLED (Termux)")
+    print(f"✅ USER READY : {me.first_name}")
+    print("🚀 SPEED MODE ENABLED (TERMUX)")
     await bot.run_until_disconnected()
 
 async def start():
