@@ -1,5 +1,6 @@
 import os, re, asyncio, tempfile, shutil
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -7,6 +8,7 @@ from pyrogram.types import Message
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
+STRING_SESSION = os.environ["STRING_SESSION"]
 
 THUMB_PATH = "thumb.jpg"
 
@@ -15,9 +17,8 @@ OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
 # ================= CLIENTS =================
-# 🔥 SQLite session (Railway safe)
 user = TelegramClient(
-    "user",
+    StringSession(STRING_SESSION),
     API_ID,
     API_HASH
 )
@@ -84,18 +85,8 @@ def fname(a, s, e, o, q):
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
-    if not m.reply_to_message.photo:
-        return await m.reply("❌ Photo reply karke /set_thumb bhejo")
-
     await m.reply_to_message.download(THUMB_PATH)
     await m.reply("✅ Thumbnail saved")
-
-@bot.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m):
-    if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH)
-    else:
-        await m.reply("❌ Thumbnail not set")
 
 # ================= MAIN =================
 @bot.on_message(filters.video | filters.document)
@@ -109,7 +100,6 @@ async def handle(_, m: Message):
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, "input")
 
-    await m.reply("⬇️ Downloading fast…")
     await user.download_media(m, path)
 
     await bot.send_video(
@@ -127,7 +117,7 @@ async def handle(_, m: Message):
 async def main():
     await user.start()
     await bot.start()
-    print("🤖 BOT LIVE (RAILWAY SAFE)")
+    print("🤖 Anime Qualifier Bot LIVE")
     await asyncio.Event().wait()
 
 asyncio.run(main())
