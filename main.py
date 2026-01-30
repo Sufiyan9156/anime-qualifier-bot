@@ -1,6 +1,10 @@
-import os, re, asyncio, tempfile, shutil
+import os
+import re
+import asyncio
+import tempfile
+import shutil
+
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -8,7 +12,7 @@ from pyrogram.types import Message
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-STRING_SESSION = os.environ["STRING_SESSION"]
+STRING_SESSION = os.environ["STRING_SESSION"].strip()
 
 THUMB_PATH = "thumb.jpg"
 
@@ -17,8 +21,9 @@ OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
 # ================= CLIENTS =================
+# 🚀 NO StringSession() — Railway safe
 user = TelegramClient(
-    StringSession(STRING_SESSION),
+    STRING_SESSION,
     API_ID,
     API_HASH
 )
@@ -85,6 +90,10 @@ def fname(a, s, e, o, q):
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
+    if not m.reply_to_message.photo:
+        await m.reply("❌ Photo reply karke /set_thumb bhejo")
+        return
+
     await m.reply_to_message.download(THUMB_PATH)
     await m.reply("✅ Thumbnail saved")
 
@@ -117,7 +126,7 @@ async def handle(_, m: Message):
 async def main():
     await user.start()
     await bot.start()
-    print("🤖 Anime Qualifier Bot LIVE")
+    print("🤖 Anime Qualifier Bot LIVE on Railway")
     await asyncio.Event().wait()
 
 asyncio.run(main())
