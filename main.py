@@ -120,17 +120,23 @@ async def worker(client, chat_id, key):
 
         for it in items:
             i = it["info"]
-            tmp = tempfile.mkdtemp()
-            path = os.path.join(tmp, build_filename(i))
 
-            await it["msg"].download(path)
+            tmp = tempfile.mkdtemp()
+            video_path = os.path.join(tmp, build_filename(i))
+            thumb_path = None
+
+            await it["msg"].download(video_path)
+
+            if THUMB_FILE_ID:
+                thumb_path = os.path.join(tmp, "thumb.jpg")
+                await client.download_media(THUMB_FILE_ID, thumb_path)
 
             await client.send_video(
                 chat_id,
-                path,
+                video_path,
                 caption=build_caption(i),
                 file_name=build_filename(i),
-                thumb=THUMB_FILE_ID,
+                thumb=thumb_path,
                 supports_streaming=True
             )
 
@@ -159,5 +165,5 @@ async def handle(client, m: Message):
         ACTIVE.add(key)
         asyncio.create_task(worker(client, m.chat.id, key))
 
-print("🤖 Anime Qualifier Bot — FINAL STABLE & CORRECT BUILD")
+print("🤖 Anime Qualifier Bot — FINAL STABLE & BULK READY")
 app.run()
