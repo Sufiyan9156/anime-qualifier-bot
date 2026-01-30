@@ -1,4 +1,4 @@
-import os, re, asyncio, tempfile
+import os, re, asyncio, tempfile, shutil
 from collections import defaultdict
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -25,7 +25,7 @@ OVERALL_OFFSET = {
 
 QUEUE = defaultdict(lambda: defaultdict(list))
 QUEUE_MSGS = defaultdict(list)
-WORKERS = set()
+ACTIVE_WORKERS = set()
 
 # ================= BOT =================
 app = Client(
@@ -36,7 +36,7 @@ app = Client(
 )
 
 # ================= HELPERS =================
-def is_owner(uid): 
+def is_owner(uid):
     return uid in OWNERS
 
 def normalize_anime(name: str) -> str:
@@ -82,7 +82,7 @@ def parse_file(filename: str):
         "quality": quality,
     }
 
-def caption(i):
+def build_caption(i):
     return (
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
@@ -94,7 +94,7 @@ def caption(i):
         f"⬡ **Uploaded By {UPLOAD_TAG}**"
     )
 
-def filename(i):
+def build_filename(i):
     return (
         f"{i['anime']} Season {i['season']} "
         f"Episode {i['episode']}({i['overall']}) "
@@ -102,6 +102,8 @@ def filename(i):
     )
 
 async def progress(cur, tot, msg):
+    if tot == 0:
+        return
     p = cur * 100 / tot
     bar = "▰" * int(p // 10) + "▱" * (10 - int(p // 10))
     try:
@@ -111,50 +113,51 @@ async def progress(cur, tot, msg):
 
 # ================= WORKER =================
 async def worker(client, chat_id, key):
-    await asyncio.sleep(5)
+    await asyncio.sleep(4)
 
     episodes = QUEUE.pop(key, {})
     msgs = QUEUE_MSGS.pop(key, [])
 
     for mid in msgs:
-        try: 
+        try:
             await client.delete_messages(chat_id, mid)
-        except: 
+        except:
             pass
 
-    for ep in sorted(episodes, key=lambda x: int(x)):
-        items = episodes[ep]
-        items.sort(key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
+    try:
+        for ep in sorted(episodes, key=lambda x: int(x)):
+            items = episodes[ep]
+            items.sort(key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
 
-        for it in items:
-            i = it["info"]
+            for it in items:
+                info = it["info"]
 
-            status = await client.send_message(
-                chat_id,
-                f"📤 Uploading Episode {i['episode']}({i['overall']}) [{i['quality']}]"
-            )
+                status = await client.send_message(
+                    chat_id,
+                    f"📤 Uploading Episode {info['episode']}({info['overall']}) [{info['quality']}]"
+                )
 
-            tmp = tempfile.mkdtemp()
-            path = os.path.join(tmp, filename(i))
+                tmpdir = tempfile.mkdtemp()
+                filepath = os.path.join(tmpdir, build_filename(info))
 
-            await it["message"].download(path)
+                await it["message"].download(filepath)
 
-            await client.send_video(
-                chat_id,
-                path,
-                caption=caption(i),
-                file_name=filename(i),
-                thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=True,
-                progress=progress,
-                progress_args=(status,)
-            )
+                await client.send_video(
+                    chat_id=chat_id,
+                    video=filepath,
+                    caption=build_caption(info),
+                    file_name=build_filename(info),
+                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                    supports_streaming=True,
+                    progress=progress,
+                    progress_args=(status,)
+                )
 
-            await status.delete()
-            os.remove(path)
-            os.rmdir(tmp)
+                await status.delete()
+                shutil.rmtree(tmpdir, ignore_errors=True)
 
-    WORKERS.discard(key)
+    finally:
+        ACTIVE_WORKERS.discard(key)
 
 # ================= COMMANDS =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
@@ -184,17 +187,18 @@ async def handle(client, m: Message):
     info = parse_file(media.file_name or "video.mp4")
 
     key = (info["anime"], info["season"])
-    QUEUE[key][info["episode"]].append({"media": media, "info": info, "message": m})
+    QUEUE[key][info["episode"]].append({"message": m, "info": info})
 
-    r = await m.reply(
+    reply = await m.reply(
         f"📥 Added to queue:\n"
         f"**{info['anime']} S{info['season']}E{info['episode']}({info['overall']}) [{info['quality']}]**"
     )
-    QUEUE_MSGS[key].append(r.id)
 
-    if key not in WORKERS:
-        WORKERS.add(key)
+    QUEUE_MSGS[key].append(reply.id)
+
+    if key not in ACTIVE_WORKERS:
+        ACTIVE_WORKERS.add(key)
         asyncio.create_task(worker(client, m.chat.id, key))
 
-print("🤖 Anime Qualifier Bot — FINAL REAL WORKING BUILD LIVE")
+print("🤖 Anime Qualifier Bot — STABLE & CORRECT BUILD LIVE")
 app.run()
