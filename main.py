@@ -1,43 +1,39 @@
 import os, re, asyncio, tempfile, shutil, time
 from collections import defaultdict
+
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+
+from telethon import TelegramClient
+from telethon.tl.types import Message as TLMessage
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-
-THUMB_PATH = "thumb.jpg"
+THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
 
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
-
 QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
+
 QUEUE = defaultdict(lambda: defaultdict(list))
 ACTIVE = False
 
-app = Client(
+# ================= CLIENTS =================
+bot = Client(
     "anime_qualifier_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-# ================= PROGRESS =================
-async def progress(current, total, msg, start, label):
-    if total == 0:
-        return
-    percent = int(current * 100 / total)
-    speed = current / max(1, time.time() - start)
-    try:
-        await msg.edit(
-            f"{label}\n"
-            f"{percent}% | {speed/1024/1024:.2f} MB/s"
-        )
-    except:
-        pass
+user = TelegramClient(
+    "user",  # user.session
+    API_ID,
+    API_HASH
+)
 
 # ================= HELPERS =================
 def is_owner(uid):
@@ -45,7 +41,6 @@ def is_owner(uid):
 
 def clean_anime_name(name: str):
     name = name.replace("_", " ").replace(".", " ")
-
     name = re.sub(r"\[.*?\]|\(.*?\)", " ", name)
     name = re.sub(r"@[\w_]+", " ", name)
 
@@ -84,17 +79,11 @@ def extract_info(filename: str):
         if m:
             e = m.group(1)
 
-    season = f"{int(s):02d}"
-    episode = f"{int(e):02d}"
-    overall = f"{int(e):03d}"
-
-    anime = clean_anime_name(filename)
-
     return {
-        "anime": anime,
-        "season": season,
-        "episode": episode,
-        "overall": overall,
+        "anime": clean_anime_name(filename),
+        "season": f"{int(s):02d}",
+        "episode": f"{int(e):02d}",
+        "overall": f"{int(e):03d}",
         "quality": quality
     }
 
@@ -118,25 +107,27 @@ def build_caption(i):
     )
 
 # ================= THUMB =================
-@app.on_message(filters.command("set_thumb") & filters.reply)
+@bot.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
+    global THUMB_FILE_ID
     if not is_owner(m.from_user.id):
         return
     if not m.reply_to_message.photo:
         return await m.reply("❌ Photo reply karo")
 
-    await m.reply_to_message.download(THUMB_PATH)
+    THUMB_FILE_ID = m.reply_to_message.photo.file_id
+    os.environ["THUMB_FILE_ID"] = THUMB_FILE_ID
     await m.reply("✅ Thumbnail saved permanently")
 
-@app.on_message(filters.command("view_thumb"))
+@bot.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+    if THUMB_FILE_ID:
+        await m.reply_photo(THUMB_FILE_ID, caption="🖼 Current Thumbnail")
     else:
         await m.reply("❌ Thumbnail set nahi hai")
 
 # ================= PREVIEW =================
-@app.on_message(filters.command("preview"))
+@bot.on_message(filters.command("preview"))
 async def preview(_, m):
     if not is_owner(m.from_user.id) or not QUEUE:
         return
@@ -144,11 +135,8 @@ async def preview(_, m):
     text = "📋 **Upload Preview**\n\n"
     for (anime, season), eps in QUEUE.items():
         text += f"**{anime} – Season {season}**\n"
-        for ep in sorted(eps, key=lambda x: int(x)):
-            qs = ", ".join(
-                x["info"]["quality"]
-                for x in sorted(eps[ep], key=lambda y: QUALITY_ORDER[y["info"]["quality"]])
-            )
+        for ep in sorted(eps):
+            qs = ", ".join(x["info"]["quality"] for x in eps[ep])
             text += f"Episode {ep} → {qs}\n"
         text += "\n"
 
@@ -160,64 +148,59 @@ async def preview(_, m):
     )
 
 # ================= CALLBACK =================
-@app.on_callback_query()
-async def cb(client, q):
+@bot.on_callback_query()
+async def cb(_, q):
     global ACTIVE
     if q.data == "start" and not ACTIVE:
         ACTIVE = True
         await q.message.edit("🚀 Upload started...")
-        asyncio.create_task(worker(client, q.message.chat.id))
+        asyncio.create_task(worker(q.message.chat.id))
         await q.answer()
 
 # ================= WORKER =================
-async def worker(client, chat_id):
+async def worker(chat_id):
     global ACTIVE
     tmp = tempfile.mkdtemp()
 
-    for (_, _), eps in list(QUEUE.items()):
-        for ep in sorted(eps, key=lambda x: int(x)):
-            for it in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
-                i = it["info"]
+    async with user:
+        for (_, _), eps in list(QUEUE.items()):
+            for ep in sorted(eps):
+                for it in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
+                    i = it["info"]
+                    msg: TLMessage = await user.get_messages(
+                        it["msg"].chat.id,
+                        ids=it["msg"].id
+                    )
 
-                status = await client.send_message(chat_id, "⬇️ Downloading...")
-                start = time.time()
+                    vpath = os.path.join(tmp, build_filename(i))
+                    await msg.download_media(vpath)
 
-                vpath = os.path.join(tmp, build_filename(i))
-                await it["msg"].download(
-                    vpath,
-                    progress=progress,
-                    progress_args=(status, start, "⬇️ Downloading")
-                )
+                    await bot.send_video(
+                        chat_id,
+                        vpath,
+                        caption=build_caption(i),
+                        file_name=build_filename(i),
+                        thumb=THUMB_FILE_ID,
+                        supports_streaming=True
+                    )
 
-                start_up = time.time()
-                await client.send_video(
-                    chat_id,
-                    vpath,
-                    caption=build_caption(i),
-                    file_name=build_filename(i),
-                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                    supports_streaming=True,
-                    progress=progress,
-                    progress_args=(status, start_up, "⬆️ Uploading")
-                )
-
-                await status.delete()
-                os.remove(vpath)
+                    os.remove(vpath)
 
     shutil.rmtree(tmp)
     QUEUE.clear()
     ACTIVE = False
-    await client.send_message(chat_id, "✅ All uploads completed")
+    await bot.send_message(chat_id, "✅ All uploads completed")
 
 # ================= MAIN =================
-@app.on_message(filters.video | filters.document)
+@bot.on_message(filters.video | filters.document)
 async def handle(_, m):
     if not m.from_user or not is_owner(m.from_user.id):
         return
 
     info = extract_info((m.video or m.document).file_name or "video")
-    key = (info["anime"], info["season"])
-    QUEUE[key][info["episode"]].append({"msg": m, "info": info})
+    QUEUE[(info["anime"], info["season"])][info["episode"]].append(
+        {"msg": m, "info": info}
+    )
 
     await m.reply(
         f"📥 Added:\n"
@@ -226,5 +209,5 @@ async def handle(_, m):
         f"[{info['quality']}]**"
     )
 
-print("🤖 Anime Qualifier Bot — FINAL CLEAN STABLE BUILD")
-app.run()
+print("🤖 Hybrid Telethon USER + Bot running")
+bot.run()
