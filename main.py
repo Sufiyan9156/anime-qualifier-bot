@@ -11,31 +11,41 @@ from pyrogram.types import (
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-THUMB_FILE_ID = os.environ.get("THUMB_FILE_ID")
 
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
+THUMB_PATH = "thumb.jpg"
 
 QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
 OVERALL_OFFSET = {"01": 0, "02": 24, "03": 47, "04": 59}
 
 QUEUE = defaultdict(lambda: defaultdict(list))
-ACTIVE = set()
+UPLOAD_RUNNING = False
 
-app = Client("anime_qualifier_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "anime_qualifier_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
 # ================= HELPERS =================
-def is_owner(uid): 
+def is_owner(uid):
     return uid in OWNERS
 
-def normalize(name):
+def normalize(name: str) -> str:
     name = name.replace("_", " ").replace(".", " ")
     name = re.sub(r"@[\w\-_.]+|\[.*?\]|S\d+\s*E\d+.*", "", name, flags=re.I)
-    name = re.sub(r"(480P|720P|1080P|2160P|4K|HDRIP|WEB|MP4|MKV|HINDI|DUAL)", "", name, flags=re.I)
+    name = re.sub(
+        r"(480P|720P|1080P|2160P|4K|HDRIP|WEB|MP4|MKV|HINDI|DUAL)",
+        "",
+        name,
+        flags=re.I
+    )
     return re.sub(r"\s+", " ", name).strip().title()
 
-def parse_file(filename):
+def parse_file(filename: str):
     up = filename.upper()
     anime = normalize(filename)
 
@@ -45,9 +55,12 @@ def parse_file(filename):
         s, e = m.group(1), m.group(2)
 
     quality = "480p"
-    if "2160" in up or "4K" in up: quality = "2k"
-    elif "1080" in up: quality = "1080p"
-    elif "720" in up: quality = "720p"
+    if "2160" in up or "4K" in up:
+        quality = "2k"
+    elif "1080" in up:
+        quality = "1080p"
+    elif "720" in up:
+        quality = "720p"
 
     overall = OVERALL_OFFSET.get(f"{int(s):02d}", 0) + int(e)
 
@@ -64,7 +77,7 @@ def build_caption(i):
         f"⬡ **{i['anime']}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
         f"┃ **Season : {i['season']}**\n"
-        f"┃ **Episode : {i['episode']}({i['overall']})**\n"
+        f"┃ **Episode : {int(i['episode'])}({i['overall']})**\n"
         f"┃ **Audio : Hindi #Official**\n"
         f"┃ **Quality : {i['quality']}**\n"
         f"┗━━━━━━━━━━━━━━━━━━┛\n"
@@ -72,74 +85,110 @@ def build_caption(i):
     )
 
 def build_filename(i):
-    return f"{i['anime']} Season {i['season']} Episode {i['episode']} ({i['overall']}) [{i['quality']}] {UPLOAD_TAG}.mp4"
+    return (
+        f"{i['anime']} Season {i['season']} "
+        f"Episode {int(i['episode'])} ({i['overall']}) "
+        f"[{i['quality']}] {UPLOAD_TAG}.mp4"
+    )
+
+# ================= THUMB COMMANDS =================
+@app.on_message(filters.command("set_thumb") & filters.reply)
+async def set_thumb(_, m: Message):
+    if not is_owner(m.from_user.id):
+        return
+    if not m.reply_to_message.photo:
+        return await m.reply("❌ Photo ko reply karke /set_thumb bhejo")
+
+    await m.reply_to_message.download(THUMB_PATH)
+    await m.reply("✅ Thumbnail saved & will apply on all uploads")
+
+@app.on_message(filters.command("view_thumb"))
+async def view_thumb(_, m):
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+    else:
+        await m.reply("❌ Thumbnail set nahi hai")
 
 # ================= PREVIEW =================
 @app.on_message(filters.command("preview"))
-async def preview(_, m):
+async def preview(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
+    if not QUEUE:
+        return await m.reply("❌ Queue empty")
+
     text = "📋 **Upload Preview**\n\n"
+
     for (anime, season), eps in sorted(QUEUE.items()):
         for ep in sorted(eps, key=lambda x: int(x)):
-            text += f"**{anime} S{season}E{ep}({eps[ep][0]['info']['overall']})**\n"
+            info = eps[ep][0]["info"]
+            text += f"**{anime} S{season}E{ep}({info['overall']})**\n"
             for it in sorted(eps[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]]):
                 text += f" • {it['info']['quality']}\n"
             text += "\n"
 
     await m.reply(
-        text or "❌ Queue empty",
+        text,
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ Start Upload", callback_data="start")],
-            [InlineKeyboardButton("❌ Clear Queue", callback_data="clear")]
+            [InlineKeyboardButton("▶️ Start Upload", callback_data="start_upload")],
+            [InlineKeyboardButton("❌ Clear Queue", callback_data="clear_queue")]
         ])
     )
 
 # ================= CALLBACKS =================
 @app.on_callback_query()
-async def cb(client, q):
-    if q.data == "clear":
+async def callbacks(client, q):
+    global UPLOAD_RUNNING
+
+    if q.data == "clear_queue":
         QUEUE.clear()
         await q.message.edit("❌ Queue cleared")
 
-    elif q.data == "start":
+    elif q.data == "start_upload":
+        if UPLOAD_RUNNING:
+            return await q.answer("Upload already running", show_alert=True)
+
+        UPLOAD_RUNNING = True
         await q.message.edit("🚀 Upload started...")
-        asyncio.create_task(worker(client, q.message.chat.id, list(QUEUE.keys())[0]))
+        asyncio.create_task(upload_worker(client, q.message.chat.id))
 
-# ================= WORKER =================
-async def worker(client, chat_id, key):
-    episodes = QUEUE.pop(key)
+# ================= UPLOAD WORKER =================
+async def upload_worker(client, chat_id):
+    global UPLOAD_RUNNING
 
-    for ep in sorted(episodes, key=lambda x: int(x)):
-        items = sorted(episodes[ep], key=lambda x: QUALITY_ORDER[x["info"]["quality"]])
-
-        for it in items:
-            i = it["info"]
-            tmp = tempfile.mkdtemp()
-            vpath = os.path.join(tmp, build_filename(i))
-            tpath = None
-
-            await it["msg"].download(vpath)
-
-            if THUMB_FILE_ID:
-                tpath = os.path.join(tmp, "thumb.jpg")
-                await client.download_media(THUMB_FILE_ID, tpath)
-
-            await client.send_video(
-                chat_id,
-                vpath,
-                caption=build_caption(i),
-                file_name=build_filename(i),
-                thumb=tpath,
-                supports_streaming=True
+    for (anime, season), episodes in list(QUEUE.items()):
+        for ep in sorted(episodes, key=lambda x: int(x)):
+            items = sorted(
+                episodes[ep],
+                key=lambda x: QUALITY_ORDER[x["info"]["quality"]]
             )
 
-            shutil.rmtree(tmp)
+            for it in items:
+                i = it["info"]
+                tmp = tempfile.mkdtemp()
+                vpath = os.path.join(tmp, build_filename(i))
 
-# ================= MAIN =================
+                await it["msg"].download(vpath)
+
+                await client.send_video(
+                    chat_id,
+                    vpath,
+                    caption=build_caption(i),
+                    file_name=build_filename(i),
+                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                    supports_streaming=True
+                )
+
+                shutil.rmtree(tmp)
+
+    QUEUE.clear()
+    UPLOAD_RUNNING = False
+    await client.send_message(chat_id, "✅ All uploads completed")
+
+# ================= MAIN HANDLER =================
 @app.on_message(filters.video | filters.document)
-async def handle(_, m):
+async def handle(_, m: Message):
     if not m.from_user or not is_owner(m.from_user.id):
         return
 
@@ -147,7 +196,10 @@ async def handle(_, m):
     key = (info["anime"], info["season"])
     QUEUE[key][info["episode"]].append({"msg": m, "info": info})
 
-    await m.reply(f"📥 Added: {info['anime']} E{info['episode']}({info['overall']}) [{info['quality']}]")
+    await m.reply(
+        f"📥 Added: {info['anime']} "
+        f"E{int(info['episode'])}({info['overall']}) [{info['quality']}]"
+    )
 
-print("🤖 Anime Qualifier Bot — BATCH MODE READY")
+print("🤖 Anime Qualifier Bot — FINAL BULK SORT & UPLOAD BUILD")
 app.run()
