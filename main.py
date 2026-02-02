@@ -15,8 +15,7 @@ UPLOAD_TAG = "@SenpaiAnimess"
 
 # ================= GLOBALS =================
 THUMB_FILE_ID = None
-QUEUE = []                 # list of Message
-LAST_PREVIEW = {}          # chat_id -> preview Message
+QUEUE = []          # list of Message objects
 
 # ================= BOT =================
 app = Client(
@@ -116,34 +115,28 @@ async def add_to_queue(_, m: Message):
         return
 
     QUEUE.append(m)
-
-    anime, s, e, o, q = extract_info(
-        (m.video or m.document).file_name or "video.mp4"
-    )
-
-    preview = await m.reply_video(
-        video=(m.video or m.document).file_id,
-        caption=build_caption(anime, s, e, o, q),
-        file_name=build_filename(anime, s, e, o, q),
-        thumb=THUMB_FILE_ID,
-        supports_streaming=True
-    )
-
-    LAST_PREVIEW[m.chat.id] = preview
     await m.reply(f"📥 Added to queue ({len(QUEUE)})")
 
 # ================= PREVIEW =================
 @app.on_message(filters.command("preview"))
 async def preview(_, m: Message):
-    prev = LAST_PREVIEW.get(m.chat.id)
-    if not prev:
+    if not QUEUE:
         return await m.reply("❌ Nothing to preview")
 
-    await prev.copy(m.chat.id)
+    msg = QUEUE[-1]
+    media = msg.video or msg.document
 
-# ================= START QUEUE =================
+    a, s, e, o, q = extract_info(media.file_name or "video.mp4")
+
+    await m.reply(
+        f"🧪 **Preview (Not Uploaded)**\n\n"
+        f"📄 Filename:\n`{build_filename(a, s, e, o, q)}`\n\n"
+        f"{build_caption(a, s, e, o, q)}"
+    )
+
+# ================= START =================
 @app.on_message(filters.command("start"))
-async def start_queue(client, m: Message):
+async def start_upload(client, m: Message):
     if not is_owner(m.from_user.id):
         return
     if not QUEUE:
@@ -155,15 +148,15 @@ async def start_queue(client, m: Message):
         msg = QUEUE.pop(0)
         media = msg.video or msg.document
 
-        anime, s, e, o, q = extract_info(media.file_name or "video.mp4")
+        a, s, e, o, q = extract_info(media.file_name or "video.mp4")
 
         status = await msg.reply("📤 Uploading...")
 
         await client.send_video(
             chat_id=msg.chat.id,
             video=media.file_id,
-            caption=build_caption(anime, s, e, o, q),
-            file_name=build_filename(anime, s, e, o, q),
+            caption=build_caption(a, s, e, o, q),
+            file_name=build_filename(a, s, e, o, q),
             thumb=THUMB_FILE_ID,
             supports_streaming=True,
             progress=progress,
@@ -175,5 +168,5 @@ async def start_queue(client, m: Message):
     await m.reply("✅ All uploads completed")
 
 # ================= RUN =================
-print("🤖 Anime Qualifier Bot — FINAL QUEUE + PREVIEW FIXED")
+print("🤖 Anime Qualifier Bot — STABLE FINAL BUILD")
 app.run()
