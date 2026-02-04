@@ -7,6 +7,7 @@ from collections import defaultdict
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import MessageNotModified
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -16,7 +17,9 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
+
 THUMB_PATH = "thumb.jpg"
+MAX_THUMB_SIZE = 200 * 1024  # 200 KB
 
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/Sufiyan9156/anime-qualifier-bot/main/episodes"
 
@@ -30,7 +33,6 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# queue[anime][season][episode]
 QUEUE = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
     "title": "",
     "qualities": defaultdict(list)
@@ -121,17 +123,22 @@ async def set_thumb(_, m: Message):
         return await m.reply("❌ Reply image with /set_thumb")
 
     await m.reply_to_message.download(THUMB_PATH)
+
+    if not os.path.exists(THUMB_PATH) or os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
+        os.remove(THUMB_PATH)
+        return await m.reply("❌ Thumbnail must be JPG and under 200KB")
+
     await m.reply("✅ Custom thumbnail saved")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
     if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+        await m.reply_photo(THUMB_PATH)
     else:
         await m.reply("❌ Thumbnail not set")
 
-# ================= ADD TO QUEUE =================
+# ================= ADD =================
 @app.on_message(filters.video | filters.document)
 async def add_queue(_, m: Message):
     if not is_owner(m.from_user.id):
@@ -146,25 +153,6 @@ async def add_queue(_, m: Message):
 
     await m.reply(f"📥 Added → {anime} S{s}E{e} [{q}]")
 
-# ================= PREVIEW =================
-@app.on_message(filters.command("preview"))
-async def preview(_, m):
-    if not QUEUE:
-        return await m.reply("❌ Queue empty")
-
-    text = "🧪 **PREVIEW (Grouped)**\n\n"
-    for anime, seasons in QUEUE.items():
-        text += f"⬡ **{anime}**\n"
-        for s, eps in seasons.items():
-            text += f"\nSeason {s}\n"
-            for e, data in sorted(eps.items()):
-                text += f"\n🎺 Episode {e} – {data['title']}\n"
-                for q in sorted(data["qualities"], key=lambda x: QUALITY_ORDER[x]):
-                    text += f"• {q}\n"
-        text += "\n"
-
-    await m.reply(text)
-
 # ================= START =================
 @app.on_message(filters.command("start"))
 async def start_upload(client, m: Message):
@@ -174,7 +162,8 @@ async def start_upload(client, m: Message):
         return await m.reply("❌ Queue empty")
 
     status = await m.reply("🚀 Uploading...")
-    start_time = time.time()
+    last_text = ""
+    last_edit = 0
 
     for anime, seasons in QUEUE.items():
         for s, eps in seasons.items():
@@ -183,21 +172,31 @@ async def start_upload(client, m: Message):
                 for q in sorted(data["qualities"], key=lambda x: QUALITY_ORDER[x]):
                     for fid in data["qualities"][q]:
                         path = await client.download_media(fid)
-
-                        file_size = os.path.getsize(path)
-                        sent = 0
+                        start = time.time()
 
                         async def progress(cur, total):
-                            nonlocal sent
-                            sent = cur
+                            nonlocal last_text, last_edit
+                            now = time.time()
+                            if now - last_edit < 1:
+                                return
+
                             percent = int(cur * 100 / total)
-                            speed = cur / max(1, (time.time() - start_time)) / (1024 * 1024)
+                            speed = (cur / max(1, now - start)) / (1024 * 1024)
                             bar = "■" * (percent // 10) + "▢" * (10 - percent // 10)
-                            await status.edit(
+
+                            text = (
                                 f"Status: Uploading\n"
                                 f"{bar} {percent}%\n"
                                 f"⏩ {speed:.2f} MB/s"
                             )
+
+                            if text != last_text:
+                                try:
+                                    await status.edit(text)
+                                    last_text = text
+                                    last_edit = now
+                                except MessageNotModified:
+                                    pass
 
                         await client.send_video(
                             m.chat.id,
@@ -216,5 +215,5 @@ async def start_upload(client, m: Message):
     await status.edit("✅ All uploads done")
 
 # ================= RUN =================
-print("🤖 Anime Qualifier Bot — GOD MODE BUILD LIVE")
+print("🤖 Anime Qualifier Bot — FINAL STABLE GOD BUILD")
 app.run()
