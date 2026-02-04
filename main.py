@@ -119,25 +119,21 @@ def build_caption(a, s, e, o, q):
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
+
     if not m.reply_to_message.photo:
         return await m.reply("❌ Reply image with /set_thumb")
 
     await m.reply_to_message.download(THUMB_PATH)
 
-    if not os.path.exists(THUMB_PATH) or os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
-        os.remove(THUMB_PATH)
+    if not os.path.exists(THUMB_PATH):
+        return await m.reply("❌ Thumbnail download failed")
+
+    if os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
+        if os.path.exists(THUMB_PATH):
+            os.remove(THUMB_PATH)
         return await m.reply("❌ Thumbnail must be JPG and under 200KB")
 
     await m.reply("✅ Custom thumbnail saved")
-
-
-@app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m):
-    if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH)
-    else:
-        await m.reply("❌ Thumbnail not set")
-
 # ================= ADD =================
 @app.on_message(filters.video | filters.document)
 async def add_queue(_, m: Message):
