@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import urllib.request
 from collections import defaultdict
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -13,18 +14,10 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
+THUMB_PATH = "thumb.jpg"
 
-THUMB_FILE_ID = None
-
-# queue[(anime, season)][episode] = { quality: file_id }
-QUEUE = defaultdict(lambda: defaultdict(dict))
-
-QUALITY_ORDER = {
-    "480p": 1,
-    "720p": 2,
-    "1080p": 3,
-    "2k": 4
-}
+# CHANGE ONLY IF GITHUB USER / REPO CHANGES
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO/main/episodes"
 
 # ================= BOT =================
 app = Client(
@@ -34,23 +27,30 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
+# ================= QUEUE =================
+# queue[anime][season][episode] = {
+#   title: str,
+#   qualities: { "480p": [file_id, ...] }
+# }
+QUEUE = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
+    "title": "",
+    "qualities": defaultdict(list)
+})))
+
 # ================= HELPERS =================
-def is_owner(uid):
+def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
 
-def clean_filename(name: str) -> str:
-    name = name.replace("._", "")
-    name = name.replace("_", " ")
-    name = name.replace(".", " ")
-    return re.sub(r"\s+", " ", name).strip()
+def slugify(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
-def extract_info(filename: str):
-    name = clean_filename(filename).upper()
+def parse_filename(filename: str):
+    name = filename.lower().replace("_", " ").replace(".", " ")
 
     # QUALITY
-    if "2160" in name or "4K" in name:
+    if "2160" in name or "4k" in name:
         q = "2k"
     elif "1080" in name:
         q = "1080p"
@@ -61,78 +61,107 @@ def extract_info(filename: str):
 
     # SEASON / EP
     s, e = 1, 1
-    m = re.search(r"S(\d{1,2})\s*E(\d{1,3})", name)
+    m = re.search(r"s(\d{1,2})\s*e(\d{1,3})", name)
     if m:
         s, e = int(m.group(1)), int(m.group(2))
 
-    season = f"{s:02d}"
-    episode = f"{e:02d}"
-    overall = f"{e:03d}"
-
-    # ANIME NAME
-    anime = re.sub(
-        r"(S\d+E\d+|\d{3,4}P|4K|HINDI|DUAL|WEB|HDRIP|BLURAY|SD|HD|FHD|MP4|MKV|@\w+)",
+    # CLEAN ANIME NAME
+    clean = re.sub(
+        r"s\d+e\d+|\d{3,4}p|4k|hindi|dual|web|hdrip|bluray|x264|x265|aac|mp4|mkv|@\w+",
         "",
-        name,
-        flags=re.I
+        name
     )
+    anime = re.sub(r"\s+", " ", clean).strip().title()
 
-    anime = re.sub(r"\s+", " ", anime).strip().title()
-
-    return anime, season, episode, overall, q
+    return anime, f"{s:02d}", f"{e:02d}", f"{e:03d}", q
 
 
-def build_caption(a, s, e, o, q):
+def load_episode_title(anime: str, season: str, episode: int):
+    slug = slugify(anime)
+    url = f"{GITHUB_RAW_BASE}/{slug}/season_{season}.txt"
+
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            for line in r.read().decode().splitlines():
+                if "|" not in line:
+                    continue
+                ep, title = line.split("|", 1)
+                if int(ep.strip()) == episode:
+                    return title.strip()
+    except:
+        pass
+
+    return f"Episode {episode:02d}"
+
+
+def build_filename(anime, s, e, o, q):
+    return f"{anime} Season {s} Episode {e}({o}) [{q}] {UPLOAD_TAG}.mp4"
+
+
+def build_caption(anime, s, e, o, q):
     return (
-        f"⬡ **{a}**\n"
+        f"⬡ **{anime}**\n"
         f"┏━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ Season : {s}\n"
-        f"┃ Episode : {e}({o})\n"
-        f"┃ Audio : Hindi #Official\n"
-        f"┃ Quality : {q}\n"
+        f"┃ **Season : {s}**\n"
+        f"┃ **Episode : {e}({o})**\n"
+        f"┃ **Audio : Hindi #Official**\n"
+        f"┃ **Quality : {q}**\n"
         f"┗━━━━━━━━━━━━━━━━━━┛\n"
-        f"⬡ Uploaded By {UPLOAD_TAG}"
+        f"⬡ **Uploaded By {UPLOAD_TAG}**"
     )
-
-
-def build_filename(a, s, e, o, q):
-    return f"{a} Season {s} Episode {e}({o}) [{q}] {UPLOAD_TAG}.mp4"
-
 
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
-    global THUMB_FILE_ID
     if not is_owner(m.from_user.id):
         return
     if not m.reply_to_message.photo:
-        return await m.reply("❌ Photo reply karo")
+        return await m.reply("❌ Reply photo with /set_thumb")
 
-    THUMB_FILE_ID = m.reply_to_message.photo.file_id
-    await m.reply("✅ Thumbnail set (stable)")
+    await m.reply_to_message.download(THUMB_PATH)
+    await m.reply("✅ Custom thumbnail saved")
 
 
 @app.on_message(filters.command("view_thumb"))
 async def view_thumb(_, m):
-    if THUMB_FILE_ID:
-        await m.reply_photo(THUMB_FILE_ID)
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
     else:
         await m.reply("❌ Thumbnail not set")
 
-
-# ================= QUEUE =================
+# ================= ADD TO QUEUE =================
 @app.on_message(filters.video | filters.document)
 async def add_queue(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
     media = m.video or m.document
-    anime, s, e, o, q = extract_info(media.file_name or "video")
+    anime, s, e, o, q = parse_filename(media.file_name or "video.mp4")
+    title = load_episode_title(anime, s, int(e))
 
-    QUEUE[(anime, s)][e][q] = media.file_id
+    QUEUE[anime][s][e]["title"] = title
+    QUEUE[anime][s][e]["qualities"][q].append(media.file_id)
 
     await m.reply(f"📥 Added → {anime} S{s}E{e} [{q}]")
 
+# ================= PREVIEW =================
+@app.on_message(filters.command("preview"))
+async def preview(_, m):
+    if not QUEUE:
+        return await m.reply("❌ Queue empty")
+
+    text = "🧪 **PREVIEW (Grouped)**\n\n"
+    for anime, seasons in QUEUE.items():
+        text += f"⬡ **{anime}**\n"
+        for s, eps in seasons.items():
+            text += f"\nSeason {s}\n"
+            for e, data in sorted(eps.items()):
+                text += f"\n🎺 Episode {e} – {data['title']}\n"
+                for q in sorted(data["qualities"]):
+                    text += f"• {q}\n"
+        text += "\n"
+
+    await m.reply(text)
 
 # ================= START =================
 @app.on_message(filters.command("start"))
@@ -142,31 +171,29 @@ async def start_upload(client, m: Message):
     if not QUEUE:
         return await m.reply("❌ Queue empty")
 
-    await m.reply("🚀 Upload started (sorted & clean)")
+    await m.reply("🚀 Uploading...")
 
-    for (anime, s), episodes in QUEUE.items():
-        for e in sorted(episodes, key=lambda x: int(x)):
-            o = f"{int(e):03d}"
-            qualities = episodes[e]
-
-            for q in sorted(qualities, key=lambda x: QUALITY_ORDER[x]):
-                fid = qualities[q]
-
-                await client.send_video(
-                    chat_id=m.chat.id,
-                    video=fid,
-                    caption=build_caption(anime, s, e, o, q),
-                    file_name=build_filename(anime, s, e, o, q),
-                    thumb=THUMB_FILE_ID,
-                    supports_streaming=True
-                )
-
-                await asyncio.sleep(1)
+    for anime, seasons in QUEUE.items():
+        for s, eps in seasons.items():
+            for e, data in sorted(eps.items()):
+                o = f"{int(e):03d}"
+                for q in sorted(data["qualities"]):
+                    for fid in data["qualities"][q]:
+                        path = await client.download_media(fid)
+                        await client.send_video(
+                            m.chat.id,
+                            path,
+                            caption=build_caption(anime, s, e, o, q),
+                            file_name=build_filename(anime, s, e, o, q),
+                            thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                            supports_streaming=True
+                        )
+                        os.remove(path)
+                        await asyncio.sleep(1)
 
     QUEUE.clear()
-    await m.reply("✅ All uploads done perfectly")
-
+    await m.reply("✅ All uploads done")
 
 # ================= RUN =================
-print("🤖 Anime Qualifier Bot — GOD MODE STABLE")
+print("🤖 Anime Qualifier Bot — FINAL GOD BUILD LIVE")
 app.run()
