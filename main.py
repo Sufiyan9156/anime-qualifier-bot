@@ -117,33 +117,39 @@ def build_caption(a, s, e, o, q):
 # ================= THUMB =================
 
 @app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(_, m: Message):
+async def set_thumb(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
 
     r = m.reply_to_message
 
-    file = None
+    media = None
 
+    # 1️⃣ Normal photo
     if r.photo:
-        file = r.photo
-    elif r.video and r.video.thumbs:
-        file = r.video.thumbs[0]
-    elif r.document and r.document.thumbs:
-        file = r.document.thumbs[0]
+        media = r.photo
 
-    if not file:
-        return await m.reply("❌ Reply with PHOTO or VIDEO thumbnail")
+    # 2️⃣ Video (actual video file, NOT thumb object)
+    elif r.video:
+        media = r.video
+
+    # 3️⃣ Document video
+    elif r.document:
+        media = r.document
+
+    if not media:
+        return await m.reply("❌ Reply with PHOTO or VIDEO")
 
     try:
-        await file.download(file_name=THUMB_PATH)
+        # 🔥 ALWAYS use client.download_media
+        path = await client.download_media(media, file_name=THUMB_PATH)
     except Exception as e:
-        return await m.reply(f"❌ Thumbnail download failed")
+        return await m.reply("❌ Thumbnail download failed")
 
-    if not os.path.exists(THUMB_PATH):
+    if not path or not os.path.exists(THUMB_PATH):
         return await m.reply("❌ Thumbnail save failed")
 
-    if os.path.getsize(THUMB_PATH) > 200 * 1024:
+    if os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
         os.remove(THUMB_PATH)
         return await m.reply("❌ Thumbnail must be under 200KB")
 
