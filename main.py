@@ -122,18 +122,12 @@ async def set_thumb(client: Client, m: Message):
         return
 
     r = m.reply_to_message
-
     media = None
 
-    # 1️⃣ Normal photo
     if r.photo:
         media = r.photo
-
-    # 2️⃣ Video (actual video file, NOT thumb object)
     elif r.video:
         media = r.video
-
-    # 3️⃣ Document video
     elif r.document:
         media = r.document
 
@@ -141,9 +135,8 @@ async def set_thumb(client: Client, m: Message):
         return await m.reply("❌ Reply with PHOTO or VIDEO")
 
     try:
-        # 🔥 ALWAYS use client.download_media
         path = await client.download_media(media, file_name=THUMB_PATH)
-    except Exception as e:
+    except Exception:
         return await m.reply("❌ Thumbnail download failed")
 
     if not path or not os.path.exists(THUMB_PATH):
