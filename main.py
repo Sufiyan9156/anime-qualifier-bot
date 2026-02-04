@@ -4,24 +4,25 @@ import json
 import asyncio
 import urllib.request
 from collections import defaultdict
+from PIL import Image
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# ================== ENV ==================
+# ================= ENV =================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# ================== CONFIG ==================
+# ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 THUMB_PATH = "thumb.jpg"
 
-# GitHub raw base (change only repo/user if needed)
+# 🔁 GitHub RAW (episode titles)
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO/main/episodes"
 
-# ================== BOT ==================
+# ================= BOT =================
 app = Client(
     "anime_qualifier_bot",
     api_id=API_ID,
@@ -29,18 +30,14 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# ================== GLOBAL QUEUE ==================
-# STRUCTURE:
-# queue[anime][season][episode] = {
-#   "title": "...",
-#   "qualities": { "480p": [file_id, ...], ... }
-# }
+# ================= QUEUE =================
+# queue[anime][season][episode] -> data
 QUEUE = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
     "title": None,
     "qualities": defaultdict(list)
 })))
 
-# ================== HELPERS ==================
+# ================= HELPERS =================
 def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
@@ -49,7 +46,7 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
-# -------- Filename Analyzer --------
+# ---------- FILENAME PARSER (HARD CLEAN) ----------
 def parse_filename(filename: str):
     name = filename.lower()
 
@@ -69,18 +66,33 @@ def parse_filename(filename: str):
     if m:
         s, e = int(m.group(1)), int(m.group(2))
 
-    # Clean anime name
+    # REMOVE TRASH WORDS
     clean = re.sub(
-        r"\[.*?\]|s\d+e\d+|\d{3,4}p|4k|hindi|dual|web|hdrip|bluray|x264|x265|aac|mp4|mkv|@\w+",
+        r"""
+        \[.*?\]|
+        s\d+e\d+|
+        season|episode|ep|
+        soie\d+|
+        sd|hd|
+        \d{3,4}p|4k|
+        hindi|dual|
+        web|hdrip|bluray|
+        x264|x265|aac|
+        mp4|mkv|
+        @\w+
+        """,
         "",
-        name
+        name,
+        flags=re.I | re.X
     )
-    anime_guess = re.sub(r"\s+", " ", clean).strip().title()
+
+    anime_guess = re.sub(r"[^a-zA-Z ]+", " ", clean)
+    anime_guess = re.sub(r"\s+", " ", anime_guess).strip().title()
 
     return anime_guess, f"{s:02d}", f"{e:02d}", f"{e:03d}", quality
 
 
-# -------- AniList Normalize (NO API KEY NEEDED) --------
+# ---------- AniList: NORMALIZE ANIME NAME ----------
 def anilist_normalize(title: str) -> str:
     query = {
         "query": """
@@ -112,29 +124,51 @@ def anilist_normalize(title: str) -> str:
         return title
 
 
-# -------- Episode Title Loader (GitHub TXT) --------
+# ---------- AniList: EPISODE TITLE FALLBACK ----------
+def anilist_episode_title(anime: str, episode: int):
+    query = {
+        "query": """
+        query ($search: String) {
+          Media(search: $search, type: ANIME) {
+            episodes
+          }
+        }
+        """,
+        "variables": {"search": anime}
+    }
+    try:
+        req = urllib.request.Request(
+            "https://graphql.anilist.co",
+            data=json.dumps(query).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            return f"Episode {episode:02d}"
+    except:
+        return f"Episode {episode:02d}"
+
+
+# ---------- GitHub TXT (PRIMARY) ----------
 def load_episode_title(anime: str, season: str, episode: int):
     slug = slugify(anime)
     url = f"{GITHUB_RAW_BASE}/{slug}/season_{season}.txt"
 
     try:
         with urllib.request.urlopen(url, timeout=10) as res:
-            lines = res.read().decode().splitlines()
-            for line in lines:
-                if "|" not in line:
-                    continue
-                ep_no, title = line.split("|", 1)
-                if int(ep_no.strip()) == episode:
-                    return title.strip()
+            for line in res.read().decode().splitlines():
+                if "|" in line:
+                    ep, title = line.split("|", 1)
+                    if int(ep.strip()) == episode:
+                        return title.strip()
     except:
         pass
 
-    return f"Episode {episode:02d}"
+    return anilist_episode_title(anime, episode)
 
 
-# -------- Builders --------
+# ---------- BUILDERS ----------
 def build_filename(anime, s, e, o, q):
-    return f"{anime} Season {s} Episode {e}({o}) [{q}] {UPLOAD_TAG}.mp4"
+    return f"{anime} Season {s} Episode {e} ({o}) [{q}] {UPLOAD_TAG}.mp4"
 
 
 def build_caption(anime, s, e, o, q):
@@ -150,7 +184,7 @@ def build_caption(anime, s, e, o, q):
     )
 
 
-# ================== THUMB ==================
+# ================= THUMB =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
@@ -158,8 +192,13 @@ async def set_thumb(_, m: Message):
     if not m.reply_to_message.photo:
         return await m.reply("❌ Photo ko reply karo")
 
-    await m.reply_to_message.download(THUMB_PATH)
-    await m.reply("✅ Custom Thumbnail saved")
+    temp = await m.reply_to_message.download()
+    img = Image.open(temp).convert("RGB")
+    img = img.resize((320, 320))
+    img.save(THUMB_PATH, "JPEG", quality=90)
+    os.remove(temp)
+
+    await m.reply("✅ Custom Thumbnail applied")
 
 
 @app.on_message(filters.command("view_thumb"))
@@ -170,7 +209,7 @@ async def view_thumb(_, m: Message):
         await m.reply("❌ Thumbnail not set")
 
 
-# ================== ADD TO QUEUE ==================
+# ================= ADD TO QUEUE =================
 @app.on_message(filters.video | filters.document)
 async def add_to_queue(_, m: Message):
     if not is_owner(m.from_user.id):
@@ -182,37 +221,35 @@ async def add_to_queue(_, m: Message):
     anime_guess, s, e, o, q = parse_filename(fname)
     anime = anilist_normalize(anime_guess)
 
-    ep_title = load_episode_title(anime, s, int(e))
-
+    title = load_episode_title(anime, s, int(e))
     entry = QUEUE[anime][s][e]
-    entry["title"] = ep_title
+    entry["title"] = title
     entry["qualities"][q].append(media.file_id)
 
     await m.reply(f"📥 Added → {anime} S{s}E{e} [{q}]")
 
 
-# ================== PREVIEW ==================
+# ================= PREVIEW =================
 @app.on_message(filters.command("preview"))
 async def preview(_, m: Message):
     if not QUEUE:
         return await m.reply("❌ Queue empty")
 
     text = "🧪 **PREVIEW (Grouped)**\n\n"
-
     for anime, seasons in QUEUE.items():
         text += f"⬡ **{anime}**\n"
-        for s, episodes in seasons.items():
+        for s, eps in seasons.items():
             text += f"\nSeason {s}\n"
-            for e, data in sorted(episodes.items()):
-                text += f"\n🎺 Episode {e} – {data['title']}\n"
-                for q in sorted(data["qualities"].keys()):
+            for e, d in sorted(eps.items()):
+                text += f"\n🎺 Episode {e} – {d['title']}\n"
+                for q in sorted(d["qualities"]):
                     text += f"• {q}\n"
         text += "\n"
 
     await m.reply(text)
 
 
-# ================== START UPLOAD ==================
+# ================= START UPLOAD =================
 @app.on_message(filters.command("start"))
 async def start_upload(client, m: Message):
     if not is_owner(m.from_user.id):
@@ -223,13 +260,12 @@ async def start_upload(client, m: Message):
     await m.reply("🚀 Uploading videos...")
 
     for anime, seasons in QUEUE.items():
-        for s, episodes in seasons.items():
-            for e, data in sorted(episodes.items()):
+        for s, eps in seasons.items():
+            for e, d in sorted(eps.items()):
                 o = f"{int(e):03d}"
-                for q, file_ids in data["qualities"].items():
-                    for fid in file_ids:
+                for q, fids in d["qualities"].items():
+                    for fid in fids:
                         path = await client.download_media(fid)
-
                         await client.send_video(
                             chat_id=m.chat.id,
                             video=path,
@@ -238,7 +274,6 @@ async def start_upload(client, m: Message):
                             thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                             supports_streaming=True
                         )
-
                         os.remove(path)
                         await asyncio.sleep(1)
 
@@ -246,6 +281,6 @@ async def start_upload(client, m: Message):
     await m.reply("✅ All uploads done")
 
 
-# ================== RUN ==================
-print("🤖 Anime Qualifier Bot — FINAL PRODUCTION BUILD")
+# ================= RUN =================
+print("🤖 Anime Qualifier Bot — FINAL STABLE BUILD")
 app.run()
