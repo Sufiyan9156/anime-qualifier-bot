@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, FloodWait
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -19,11 +19,11 @@ OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
 THUMB_PATH = "/tmp/thumb.jpg"
-MAX_THUMB_SIZE = 200 * 1024  # 200KB
+MAX_THUMB_SIZE = 200 * 1024
 
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/Sufiyan9156/anime-qualifier-bot/main/episodes"
 
-QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
+QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2160p": 4}
 
 # ================= USER CLIENT =================
 app = Client(
@@ -36,7 +36,8 @@ app = Client(
 # queue[anime][season][episode]
 QUEUE = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
     "title": "",
-    "qualities": defaultdict(list)
+    "qualities": {},
+    "added_msgs": []
 })))
 
 # ================= HELPERS =================
@@ -48,25 +49,25 @@ def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
-def clean_anime_name(name: str) -> str:
-    name = name.lower()
-    name = re.sub(r"\[.*?]", " ", name)
-    name = re.sub(r"s\d{1,2}\s*e\d{1,3}", " ", name)
-    name = re.sub(
-        r"\b(hindi|dual|multi|official|uncut|web|hdrip|bluray|x264|x265|aac|mp4|mkv|sd|hd|fhd|uhd|4k)\b",
+def clean_anime_name(raw: str) -> str:
+    raw = raw.lower()
+    raw = re.sub(r"\[.*?]", " ", raw)
+    raw = re.sub(r"@\w+", " ", raw)
+    raw = re.sub(r"s\d{1,2}\s*e\d{1,3}", " ", raw)
+    raw = re.sub(
+        r"\b(hindi|dual|multi|official|uncut|web|hdrip|bluray|x264|x265|aac|sd|hd|fhd|uhd|4k|2160p|1080p|720p|480p|anime|world|offic)\b",
         " ",
-        name
+        raw
     )
-    name = re.sub(r"\d{3,4}p", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name.title()
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw.title()
 
 
 def parse_filename(filename):
     raw = filename.replace("_", " ").replace(".", " ").lower()
 
     if "2160" in raw or "4k" in raw:
-        q = "2k"
+        q = "2160p"
     elif "1080" in raw:
         q = "1080p"
     elif "720" in raw:
@@ -96,11 +97,7 @@ def load_episode_title(anime, season, episode):
                     return title.strip()
     except:
         pass
-    return f"Episode {episode:02d}"
-
-
-def build_filename(a, s, e, o, q):
-    return f"{a} Season {s} Episode {e}({o}) [{q}] {UPLOAD_TAG}.mp4"
+    return f"Episode {episode:03d}"
 
 
 def build_caption(a, s, e, o, q):
@@ -115,6 +112,11 @@ def build_caption(a, s, e, o, q):
         f"**⬡ Uploaded By: {UPLOAD_TAG}**"
     )
 
+
+def build_filename(a, s, e, o, q):
+    return f"{a} Season {s} Episode {e}({o}) [{q}] {UPLOAD_TAG}.mp4"
+
+
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(client: Client, m: Message):
@@ -124,13 +126,10 @@ async def set_thumb(client: Client, m: Message):
     if not m.reply_to_message or not m.reply_to_message.photo:
         return await m.reply("❌ **Reply with PHOTO only**")
 
-    try:
-        if os.path.exists(THUMB_PATH):
-            os.remove(THUMB_PATH)
+    if os.path.exists(THUMB_PATH):
+        os.remove(THUMB_PATH)
 
-        await client.download_media(m.reply_to_message.photo, file_name=THUMB_PATH)
-    except:
-        return await m.reply("❌ **Thumbnail download failed**")
+    await client.download_media(m.reply_to_message.photo, file_name=THUMB_PATH)
 
     if not os.path.isfile(THUMB_PATH):
         return await m.reply("❌ **Thumbnail save failed**")
@@ -142,13 +141,6 @@ async def set_thumb(client: Client, m: Message):
     await m.reply("✅ **Custom thumbnail saved**")
 
 
-@app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m: Message):
-    if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH)
-    else:
-        await m.reply("❌ **Thumbnail not set**")
-
 # ================= ADD =================
 @app.on_message(filters.video | filters.document)
 async def add_queue(_, m: Message):
@@ -157,74 +149,60 @@ async def add_queue(_, m: Message):
 
     media = m.video or m.document
     anime, s, e, o, q = parse_filename(media.file_name or "video.mp4")
+
     title = load_episode_title(anime, s, int(e))
-
     QUEUE[anime][s][e]["title"] = title
-    QUEUE[anime][s][e]["qualities"][q].append(media.file_id)
+    QUEUE[anime][s][e]["qualities"][q] = media.file_id
 
-    await m.reply(f"**📥 Added → {anime} S{s}E{e} [{q}]**")
+    msg = await m.reply(f"**📥 Added → {anime} S{s}E{e} [{q}]**")
+    QUEUE[anime][s][e]["added_msgs"].append(msg)
+
 
 # ================= START =================
 @app.on_message(filters.command("start"))
-async def start_upload(client, m: Message):
+async def start_upload(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
-    if not QUEUE:
-        return await m.reply("❌ **Queue empty**")
 
     status = await m.reply("**🚀 Uploading...**")
-    last_text = ""
-    last_edit = 0
 
     for anime, seasons in QUEUE.items():
         for s, eps in seasons.items():
             for e, data in sorted(eps.items()):
                 o = f"{int(e):03d}"
+
+                # episode summary
+                lines = [f"**🎺 Episode {o} - {data['title']}**"]
                 for q in sorted(data["qualities"], key=lambda x: QUALITY_ORDER[x]):
-                    for fid in data["qualities"][q]:
-                        path = await client.download_media(fid)
-                        start = time.time()
+                    lines.append(f"**{q}**")
+                await m.reply("\n".join(lines))
 
-                        async def progress(cur, total):
-                            nonlocal last_text, last_edit
-                            now = time.time()
-                            if now - last_edit < 1:
-                                return
+                # delete added msgs
+                for msg in data["added_msgs"]:
+                    try:
+                        await msg.delete()
+                    except:
+                        pass
 
-                            percent = int(cur * 100 / total)
-                            speed = (cur / max(1, now - start)) / (1024 * 1024)
-                            bar = "■■■■■■■■■■"[:percent // 10] + "▢" * (10 - percent // 10)
+                for q in sorted(data["qualities"], key=lambda x: QUALITY_ORDER[x]):
+                    fid = data["qualities"][q]
+                    path = await client.download_media(fid)
 
-                            text = (
-                                f"**Status: Uploading**\n"
-                                f"**{bar} {percent}%**\n"
-                                f"**⏩ {speed:.2f} MB/s**"
-                            )
+                    await client.send_video(
+                        m.chat.id,
+                        path,
+                        caption=build_caption(anime, s, e, o, q),
+                        file_name=build_filename(anime, s, e, o, q),
+                        thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                        supports_streaming=True
+                    )
 
-                            if text != last_text:
-                                try:
-                                    await status.edit(text)
-                                    last_text = text
-                                    last_edit = now
-                                except MessageNotModified:
-                                    pass
-
-                        await client.send_video(
-                            m.chat.id,
-                            path,
-                            caption=build_caption(anime, s, e, o, q),
-                            file_name=build_filename(anime, s, e, o, q),
-                            thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                            supports_streaming=True,
-                            progress=progress
-                        )
-
-                        os.remove(path)
-                        await asyncio.sleep(1)
+                    os.remove(path)
+                    await asyncio.sleep(1)
 
     QUEUE.clear()
     await status.edit("✅ **All uploads done**")
 
-# ================= RUN =================
-print("🤖 Anime Qualifier — USER SESSION GOD BUILD LIVE")
+
+print("🤖 Anime Qualifier — FINAL USER SESSION GOD MODE")
 app.run()
