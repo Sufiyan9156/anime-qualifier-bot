@@ -12,27 +12,28 @@ from pyrogram.errors import MessageNotModified
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+SESSION_STRING = os.environ["SESSION_STRING"]
 
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
-THUMB_PATH = "/tmp/thumb.jpg"          # 🔥 IMPORTANT
-MAX_THUMB_SIZE = 200 * 1024             # 200KB
+THUMB_PATH = "/tmp/thumb.jpg"
+MAX_THUMB_SIZE = 200 * 1024  # 200KB
 
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/Sufiyan9156/anime-qualifier-bot/main/episodes"
 
 QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4}
 
-# ================= BOT =================
+# ================= USER CLIENT =================
 app = Client(
-    "anime_qualifier_bot",
+    "anime_qualifier_user",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    session_string=SESSION_STRING
 )
 
+# queue[anime][season][episode]
 QUEUE = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
     "title": "",
     "qualities": defaultdict(list)
@@ -52,7 +53,7 @@ def clean_anime_name(name: str) -> str:
     name = re.sub(r"\[.*?]", " ", name)
     name = re.sub(r"s\d{1,2}\s*e\d{1,3}", " ", name)
     name = re.sub(
-        r"\b(hindi|dual|multi|world|official|uncut|web|hdrip|bluray|x264|x265|aac|mp4|mkv|sd|hd|fhd|uhd|4k)\b",
+        r"\b(hindi|dual|multi|official|uncut|web|hdrip|bluray|x264|x265|aac|mp4|mkv|sd|hd|fhd|uhd|4k)\b",
         " ",
         name
     )
@@ -104,43 +105,41 @@ def build_filename(a, s, e, o, q):
 
 def build_caption(a, s, e, o, q):
     return (
-        f"⬡ **{a}**\n"
-        f"┏━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ Season : {s}\n"
-        f"┃ Episode : {e}({o})\n"
-        f"┃ Audio : Hindi #Official\n"
-        f"┃ Quality : {q}\n"
-        f"┗━━━━━━━━━━━━━━━━━━┛\n"
-        f"⬡ Uploaded By {UPLOAD_TAG}"
+        f"**⬡ {a}**\n"
+        f"**╔══════════════════════╗**\n"
+        f"**‣ Season : {s}**\n"
+        f"**‣ Episode : {e} ({o})**\n"
+        f"**‣ Audio : Hindi #Official**\n"
+        f"**‣ Quality : {q}**\n"
+        f"**╚══════════════════════╝**\n"
+        f"**⬡ Uploaded By: {UPLOAD_TAG}**"
     )
 
-# ================= THUMB (FIXED) =================
+# ================= THUMB =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    r = m.reply_to_message
-
-    if not r.photo:
-        return await m.reply("❌ Reply with PHOTO only")
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        return await m.reply("❌ **Reply with PHOTO only**")
 
     try:
         if os.path.exists(THUMB_PATH):
             os.remove(THUMB_PATH)
 
-        await client.download_media(r.photo, file_name=THUMB_PATH)
+        await client.download_media(m.reply_to_message.photo, file_name=THUMB_PATH)
     except:
-        return await m.reply("❌ Thumbnail download failed")
+        return await m.reply("❌ **Thumbnail download failed**")
 
     if not os.path.isfile(THUMB_PATH):
-        return await m.reply("❌ Thumbnail save failed")
+        return await m.reply("❌ **Thumbnail save failed**")
 
     if os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
         os.remove(THUMB_PATH)
-        return await m.reply("❌ Thumbnail must be under 200KB")
+        return await m.reply("❌ **Thumbnail must be under 200KB**")
 
-    await m.reply("✅ Custom thumbnail saved")
+    await m.reply("✅ **Custom thumbnail saved**")
 
 
 @app.on_message(filters.command("view_thumb"))
@@ -148,7 +147,7 @@ async def view_thumb(_, m: Message):
     if os.path.exists(THUMB_PATH):
         await m.reply_photo(THUMB_PATH)
     else:
-        await m.reply("❌ Thumbnail not set")
+        await m.reply("❌ **Thumbnail not set**")
 
 # ================= ADD =================
 @app.on_message(filters.video | filters.document)
@@ -163,7 +162,7 @@ async def add_queue(_, m: Message):
     QUEUE[anime][s][e]["title"] = title
     QUEUE[anime][s][e]["qualities"][q].append(media.file_id)
 
-    await m.reply(f"📥 Added → {anime} S{s}E{e} [{q}]")
+    await m.reply(f"**📥 Added → {anime} S{s}E{e} [{q}]**")
 
 # ================= START =================
 @app.on_message(filters.command("start"))
@@ -171,9 +170,9 @@ async def start_upload(client, m: Message):
     if not is_owner(m.from_user.id):
         return
     if not QUEUE:
-        return await m.reply("❌ Queue empty")
+        return await m.reply("❌ **Queue empty**")
 
-    status = await m.reply("🚀 Uploading...")
+    status = await m.reply("**🚀 Uploading...**")
     last_text = ""
     last_edit = 0
 
@@ -194,12 +193,12 @@ async def start_upload(client, m: Message):
 
                             percent = int(cur * 100 / total)
                             speed = (cur / max(1, now - start)) / (1024 * 1024)
-                            bar = "■" * (percent // 10) + "▢" * (10 - percent // 10)
+                            bar = "■■■■■■■■■■"[:percent // 10] + "▢" * (10 - percent // 10)
 
                             text = (
-                                f"Status: Uploading\n"
-                                f"{bar} {percent}%\n"
-                                f"⏩ {speed:.2f} MB/s"
+                                f"**Status: Uploading**\n"
+                                f"**{bar} {percent}%**\n"
+                                f"**⏩ {speed:.2f} MB/s**"
                             )
 
                             if text != last_text:
@@ -224,8 +223,8 @@ async def start_upload(client, m: Message):
                         await asyncio.sleep(1)
 
     QUEUE.clear()
-    await status.edit("✅ All uploads done")
+    await status.edit("✅ **All uploads done**")
 
 # ================= RUN =================
-print("🤖 Anime Qualifier Bot — FINAL STABLE GOD BUILD")
+print("🤖 Anime Qualifier — USER SESSION GOD BUILD LIVE")
 app.run()
