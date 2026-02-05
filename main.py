@@ -18,8 +18,8 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
-THUMB_PATH = "thumb.jpg"
-MAX_THUMB_SIZE = 200 * 1024  # 200 KB
+THUMB_PATH = "/tmp/thumb.jpg"          # 🔥 IMPORTANT
+MAX_THUMB_SIZE = 200 * 1024             # 200KB
 
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/Sufiyan9156/anime-qualifier-bot/main/episodes"
 
@@ -114,32 +114,26 @@ def build_caption(a, s, e, o, q):
         f"⬡ Uploaded By {UPLOAD_TAG}"
     )
 
-# ================= THUMB =================
-
+# ================= THUMB (FIXED) =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
 
     r = m.reply_to_message
-    media = None
 
-    if r.photo:
-        media = r.photo
-    elif r.video:
-        media = r.video
-    elif r.document:
-        media = r.document
-
-    if not media:
-        return await m.reply("❌ Reply with PHOTO or VIDEO")
+    if not r.photo:
+        return await m.reply("❌ Reply with PHOTO only")
 
     try:
-        path = await client.download_media(media, file_name=THUMB_PATH)
-    except Exception:
+        if os.path.exists(THUMB_PATH):
+            os.remove(THUMB_PATH)
+
+        await client.download_media(r.photo, file_name=THUMB_PATH)
+    except:
         return await m.reply("❌ Thumbnail download failed")
 
-    if not path or not os.path.exists(THUMB_PATH):
+    if not os.path.isfile(THUMB_PATH):
         return await m.reply("❌ Thumbnail save failed")
 
     if os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
@@ -147,7 +141,15 @@ async def set_thumb(client: Client, m: Message):
         return await m.reply("❌ Thumbnail must be under 200KB")
 
     await m.reply("✅ Custom thumbnail saved")
-    
+
+
+@app.on_message(filters.command("view_thumb"))
+async def view_thumb(_, m: Message):
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH)
+    else:
+        await m.reply("❌ Thumbnail not set")
+
 # ================= ADD =================
 @app.on_message(filters.video | filters.document)
 async def add_queue(_, m: Message):
