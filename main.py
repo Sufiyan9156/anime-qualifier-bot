@@ -2,7 +2,6 @@ import os
 import re
 import time
 import asyncio
-from collections import defaultdict
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -38,28 +37,10 @@ def is_owner(uid):
 
 
 def parse_tme_link(link: str):
-    # https://t.me/SourceChannel829/3140
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     if not m:
         return None, None
     return m.group(1), int(m.group(2))
-
-
-def build_caption(filename: str, quality: str) -> str:
-    m = re.search(r"(.*?Season\s+\d+)\s+Episode\s+(\d+)\((\d+)\)", filename)
-    anime = m.group(1) if m else "Anime"
-    ep = m.group(2) if m else "01"
-    overall = m.group(3) if m else "001"
-
-    return (
-        f"⬡ {anime}\n"
-        f"╔══════════════════════╗\n"
-        f"‣ Episode : {ep} ({overall})\n"
-        f"‣ Audio : Hindi #Official\n"
-        f"‣ Quality : {quality}\n"
-        f"╚══════════════════════╝\n"
-        f"⬡ Uploaded By: {UPLOAD_TAG}"
-    )
 
 
 def parse_episode_message(text: str):
@@ -67,9 +48,12 @@ def parse_episode_message(text: str):
     if not lines or not lines[0].startswith("🎺"):
         return None
 
-    title = lines[0]
-    files = []
+    title_line = lines[0]  # 🎺 Episode 025 - Hidden Inventory
 
+    t = re.search(r"Episode\s+(\d+)", title_line)
+    overall = t.group(1) if t else "001"
+
+    files = []
     for line in lines[1:]:
         m = re.search(r"(https://t\.me/\S+)\s+-n\s+(.+)", line)
         if not m:
@@ -94,9 +78,38 @@ def parse_episode_message(text: str):
         })
 
     return {
-        "title": title,
+        "title": title_line,
+        "overall": overall,
         "files": sorted(files, key=lambda x: QUALITY_ORDER[x["quality"]])
     }
+
+
+def build_caption(title_line: str, filename: str, quality: str, overall: str) -> str:
+    m = re.search(
+        r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)\(",
+        filename,
+        re.IGNORECASE
+    )
+
+    if m:
+        anime = m.group(1).strip()
+        season = m.group(2).zfill(2)
+        episode = m.group(3).zfill(2)
+    else:
+        anime = "Anime"
+        season = "01"
+        episode = "01"
+
+    return (
+        f"**⬡ {anime}**\n"
+        f"**╔══════════════════════╗**\n"
+        f"**‣ Season : {season}**\n"
+        f"**‣ Episode : {episode} ({overall})**\n"
+        f"**‣ Audio : Hindi #Official**\n"
+        f"**‣ Quality : {quality}**\n"
+        f"**╚══════════════════════╝**\n"
+        f"**⬡ Uploaded By: {UPLOAD_TAG}**"
+    )
 
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
@@ -157,7 +170,7 @@ async def start_upload(client: Client, m: Message):
     if not EPISODE_QUEUE:
         return await m.reply("❌ Queue empty")
 
-    status = await m.reply("🚀 Starting uploads...")
+    status = await m.reply("🚀 Uploading...")
 
     for ep in EPISODE_QUEUE:
         await m.reply(f"**{ep['title']}**")
@@ -167,27 +180,33 @@ async def start_upload(client: Client, m: Message):
             if not chat:
                 continue
 
-            source_msg = await client.get_messages(chat, msg_id)
+            source = await client.get_messages(chat, msg_id)
             start = time.time()
 
             async def progress(cur, total):
                 percent = int(cur * 100 / total)
                 speed = (cur / max(1, time.time() - start)) / (1024 * 1024)
                 bar = "■" * (percent // 10) + "▢" * (10 - percent // 10)
-
                 try:
                     await status.edit(
-                        f"Status: Processing\n{bar} {percent}%\n⏩ {speed:.2f} MB/s"
+                        f"**Status: Processing**\n"
+                        f"**{bar} {percent}%**\n"
+                        f"**⏩ {speed:.2f} MB/s**"
                     )
                 except MessageNotModified:
                     pass
 
-            path = await client.download_media(source_msg, progress=progress)
+            path = await client.download_media(source, progress=progress)
 
             await client.send_video(
                 m.chat.id,
                 path,
-                caption=build_caption(item["filename"], item["quality"]),
+                caption=build_caption(
+                    ep["title"],
+                    item["filename"],
+                    item["quality"],
+                    ep["overall"]
+                ),
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                 supports_streaming=True,
@@ -200,5 +219,5 @@ async def start_upload(client: Client, m: Message):
     EPISODE_QUEUE.clear()
     await status.edit("✅ All episodes uploaded")
 
-print("🤖 Anime Qualifier — FINAL FIXED BUILD")
+print("🤖 Anime Qualifier — FINAL STABLE GOD BUILD")
 app.run()
