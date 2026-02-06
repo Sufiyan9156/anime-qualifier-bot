@@ -30,12 +30,19 @@ app = Client(
     session_string=SESSION_STRING
 )
 
-# episode_queue = { title, files[] }
 EPISODE_QUEUE = []
 
 # ================= HELPERS =================
-def is_owner(uid: int) -> bool:
+def is_owner(uid):
     return uid in OWNERS
+
+
+def parse_tme_link(link: str):
+    # https://t.me/SourceChannel829/3140
+    m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
+    if not m:
+        return None, None
+    return m.group(1), int(m.group(2))
 
 
 def build_caption(filename: str, quality: str) -> str:
@@ -57,7 +64,7 @@ def build_caption(filename: str, quality: str) -> str:
 
 def parse_episode_message(text: str):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if not lines or "🎺" not in lines[0]:
+    if not lines or not lines[0].startswith("🎺"):
         return None
 
     title = lines[0]
@@ -91,10 +98,9 @@ def parse_episode_message(text: str):
         "files": sorted(files, key=lambda x: QUALITY_ORDER[x["quality"]])
     }
 
-
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(client: Client, m: Message):
+async def set_thumb(client, m: Message):
     if not is_owner(m.from_user.id):
         return
 
@@ -114,7 +120,7 @@ async def set_thumb(client: Client, m: Message):
 
 
 @app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m: Message):
+async def view_thumb(_, m):
     if os.path.exists(THUMB_PATH):
         await m.reply_photo(THUMB_PATH)
     else:
@@ -122,16 +128,15 @@ async def view_thumb(_, m: Message):
 
 
 @app.on_message(filters.command("delete_thumb"))
-async def delete_thumb(_, m: Message):
+async def delete_thumb(_, m):
     if os.path.exists(THUMB_PATH):
         os.remove(THUMB_PATH)
         await m.reply("✅ Thumbnail deleted")
     else:
         await m.reply("❌ No thumbnail")
 
-
 # ================= QUEUE =================
-@app.on_message(filters.text)
+@app.on_message(filters.text & filters.regex(r"^🎺"))
 async def queue_episode(_, m: Message):
     if not is_owner(m.from_user.id):
         return
@@ -142,7 +147,6 @@ async def queue_episode(_, m: Message):
 
     EPISODE_QUEUE.append(data)
     await m.reply(f"📥 Episode queued → {data['title']}")
-
 
 # ================= START =================
 @app.on_message(filters.command("start"))
@@ -159,6 +163,11 @@ async def start_upload(client: Client, m: Message):
         await m.reply(f"**{ep['title']}**")
 
         for item in ep["files"]:
+            chat, msg_id = parse_tme_link(item["link"])
+            if not chat:
+                continue
+
+            source_msg = await client.get_messages(chat, msg_id)
             start = time.time()
 
             async def progress(cur, total):
@@ -166,19 +175,14 @@ async def start_upload(client: Client, m: Message):
                 speed = (cur / max(1, time.time() - start)) / (1024 * 1024)
                 bar = "■" * (percent // 10) + "▢" * (10 - percent // 10)
 
-                text = (
-                    f"Status: Uploading\n"
-                    f"{bar} {percent}%\n"
-                    f"⏩ {speed:.2f} MB/s"
-                )
-
                 try:
-                    await status.edit(text)
+                    await status.edit(
+                        f"Status: Processing\n{bar} {percent}%\n⏩ {speed:.2f} MB/s"
+                    )
                 except MessageNotModified:
                     pass
 
-            msg = await client.get_messages(item["link"])
-            path = await client.download_media(msg, progress=progress)
+            path = await client.download_media(source_msg, progress=progress)
 
             await client.send_video(
                 m.chat.id,
@@ -186,7 +190,8 @@ async def start_upload(client: Client, m: Message):
                 caption=build_caption(item["filename"], item["quality"]),
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=True
+                supports_streaming=True,
+                progress=progress
             )
 
             os.remove(path)
@@ -195,6 +200,5 @@ async def start_upload(client: Client, m: Message):
     EPISODE_QUEUE.clear()
     await status.edit("✅ All episodes uploaded")
 
-
-print("🤖 Anime Qualifier — FINAL STABLE BUILD")
+print("🤖 Anime Qualifier — FINAL FIXED BUILD")
 app.run()
