@@ -1,9 +1,5 @@
 import os
 import re
-import asyncio
-import time
-from collections import defaultdict
-
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -18,13 +14,6 @@ UPLOAD_TAG = "@SenpaiAnimess"
 
 THUMB_PATH = "/tmp/thumb.jpg"
 
-QUALITY_ORDER = {
-    "480p": 1,
-    "720p": 2,
-    "1080p": 3,
-    "2160p": 4
-}
-
 # ================= USER CLIENT =================
 app = Client(
     "anime_qualifier_user",
@@ -33,69 +22,25 @@ app = Client(
     session_string=SESSION_STRING
 )
 
-# ================= STORAGE =================
-# episodes[episode_no] = {
-#   "title": str,
-#   "files": {quality: filename}
-# }
-EPISODES = defaultdict(lambda: {
-    "title": "",
-    "files": {}
-})
-
-CURRENT_EP = None
-
 # ================= HELPERS =================
 def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
 
-def extract_episode_header(text: str):
-    """
-    🎺 Episode 025 - Hidden Inventory
-    """
-    m = re.search(r"Episode\s+(\d+)\s*-\s*(.+)", text, re.I)
-    if not m:
-        return None, None
-    return int(m.group(1)), m.group(2).strip()
-
-
-def extract_filename(text: str):
-    """
-    -n Jujutsu Kaisen Season 02 Episode 01(001) [720p] @SenpaiAnimess
-    """
-    m = re.search(r"-n\s+(.+)", text)
-    return m.group(1).strip() if m else None
-
-
-def detect_quality(name: str):
-    n = name.lower()
-    if "2160" in n or "4k" in n:
-        return "2160p"
-    if "1080" in n:
-        return "1080p"
-    if "720" in n:
-        return "720p"
-    return "480p"
-
-
-# ================= THUMB =================
+# ================= THUMB COMMANDS =================
 @app.on_message(filters.command("set_thumb") & filters.reply)
 async def set_thumb(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    if not m.reply_to_message.photo:
+    if not m.reply_to_message or not m.reply_to_message.photo:
         return await m.reply("❌ Reply with PHOTO only")
 
-    try:
-        if os.path.exists(THUMB_PATH):
-            os.remove(THUMB_PATH)
+    if os.path.exists(THUMB_PATH):
+        os.remove(THUMB_PATH)
 
-        await client.download_media(m.reply_to_message.photo, THUMB_PATH)
-        await m.reply("✅ Thumbnail saved")
-    except:
-        await m.reply("❌ Thumbnail failed")
+    await client.download_media(m.reply_to_message.photo, file_name=THUMB_PATH)
+    await m.reply("✅ Thumbnail saved")
 
 
 @app.on_message(filters.command("view_thumb"))
@@ -110,63 +55,45 @@ async def view_thumb(_, m: Message):
 async def delete_thumb(_, m: Message):
     if os.path.exists(THUMB_PATH):
         os.remove(THUMB_PATH)
-        await m.reply("🗑 Thumbnail deleted")
+        await m.reply("✅ Thumbnail deleted")
     else:
-        await m.reply("❌ Thumbnail not set")
+        await m.reply("❌ No thumbnail found")
 
-# ================= INPUT HANDLER =================
-@app.on_message(filters.text & ~filters.command)
-async def collect(_, m: Message):
-    global CURRENT_EP
 
+# ================= TEXT PARSER =================
+@app.on_message(filters.text & ~filters.command([]))
+async def parse_episode_text(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
     text = m.text.strip()
 
-    # Episode header
-    ep_no, title = extract_episode_header(text)
-    if ep_no:
-        CURRENT_EP = ep_no
-        EPISODES[ep_no]["title"] = title
+    # 🎺 Episode 025 - Hidden Inventory
+    header = re.search(r"🎺\s*Episode\s+(\d+).*?-\s*(.+)", text)
+    if not header:
         return
 
-    # File line
-    if CURRENT_EP and "-n" in text:
-        filename = extract_filename(text)
-        if not filename:
-            return
+    overall_ep = header.group(1)
+    title = header.group(2).strip()
 
-        q = detect_quality(filename)
-        EPISODES[CURRENT_EP]["files"][q] = filename
+    # All quality lines
+    qualities = re.findall(
+        r"-n\s+(Jujutsu.+?\[(480p|720p|1080p|2160p)\]\s+@SenpaiAnimess)",
+        text,
+        re.IGNORECASE
+    )
 
+    if not qualities:
+        return await m.reply("❌ No quality links found")
 
-# ================= START =================
-@app.on_message(filters.command("start"))
-async def start(_, m: Message):
-    if not is_owner(m.from_user.id):
-        return
+    # Build final output
+    output = [f"🎺 **Episode {overall_ep} - {title}**\n"]
+    for q in qualities:
+        output.append(q[0])
 
-    if not EPISODES:
-        return await m.reply("❌ No episodes found")
+    await m.reply("\n".join(output))
 
-    for ep_no in sorted(EPISODES):
-        data = EPISODES[ep_no]
-
-        lines = [
-            f"🎺 Episode {ep_no:03d} - {data['title']}",
-            ""
-        ]
-
-        for q in sorted(data["files"], key=lambda x: QUALITY_ORDER[x]):
-            lines.append(data["files"][q])
-
-        await m.reply("\n".join(lines))
-        await asyncio.sleep(1)
-
-    EPISODES.clear()
-    await m.reply("✅ Done")
 
 # ================= RUN =================
-print("🤖 Anime Qualifier — FINAL STABLE BUILD")
+print("🤖 Anime Qualifier — FINAL STABLE BUILD RUNNING")
 app.run()
