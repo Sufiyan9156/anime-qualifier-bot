@@ -1,4 +1,4 @@
-import os, re, time
+import os, re, time, asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
@@ -22,7 +22,7 @@ app = Client(
 EPISODE_QUEUE = []
 
 # ================= UTILS =================
-def is_owner(uid): 
+def is_owner(uid):
     return uid in OWNERS
 
 def make_bar(p):
@@ -41,7 +41,11 @@ async def set_thumb(_, m: Message):
     if not m.reply_to_message or not m.reply_to_message.photo:
         return await m.reply("❌ Reply photo ke saath /set_thumb")
 
-    await app.download_media(m.reply_to_message.photo, THUMB_PATH)
+    await app.download_media(
+        m.reply_to_message.photo,
+        THUMB_PATH,
+        force=True
+    )
     await m.reply("✅ Thumbnail set")
 
 # ================= PARSER =================
@@ -120,27 +124,31 @@ async def start_upload(client: Client, m: Message):
         await m.reply(ep["title"], parse_mode=ParseMode.HTML)
 
         for item in ep["files"]:
-            chat, mid = re.search(r"https://t\.me/([^/]+)/(\d+)", item["link"]).groups()
+            chat, mid = re.search(
+                r"https://t\.me/([^/]+)/(\d+)",
+                item["link"]
+            ).groups()
+
             src = await client.get_messages(chat, int(mid))
 
             prog = await m.reply("📥 Downloading...\n▱▱▱▱▱▱▱▱▱▱ 0%")
             start = time.time()
             last = 0
 
-            def progress_cb(current, total, stage):
+            async def update(stage, cur, total):
+                pct = cur * 100 / total if total else 0
+                await prog.edit(
+                    f"{stage}\n"
+                    f"{make_bar(pct)} {int(pct)}%\n"
+                    f"⏩ {speed_fmt(cur, start)}"
+                )
+
+            def progress_cb(cur, total, stage):
                 nonlocal last
-                if time.time() - last < 2.5:
+                if time.time() - last < 2:
                     return
                 last = time.time()
-                percent = current * 100 / total if total else 0
-
-                client.loop.create_task(
-                    prog.edit(
-                        f"{stage}\n"
-                        f"{make_bar(percent)} {int(percent)}%\n"
-                        f"⏩ {speed_fmt(current, start)}"
-                    )
-                )
+                client.loop.create_task(update(stage, cur, total))
 
             path = await client.download_media(
                 src,
@@ -151,7 +159,11 @@ async def start_upload(client: Client, m: Message):
             await client.send_video(
                 m.chat.id,
                 path,
-                caption=build_caption(item["filename"], item["quality"], ep["overall"]),
+                caption=build_caption(
+                    item["filename"],
+                    item["quality"],
+                    ep["overall"]
+                ),
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                 supports_streaming=False,
                 progress=lambda c,t: progress_cb(c,t,"📤 Uploading"),
@@ -164,5 +176,5 @@ async def start_upload(client: Client, m: Message):
     EPISODE_QUEUE.clear()
     await m.reply("✅ <b>All qualities uploaded</b>", parse_mode=ParseMode.HTML)
 
-print("🤖 Anime Qualifier — RAILWAY SAFE FINAL BUILD")
+print("🤖 Anime Qualifier — RAILWAY HARD STABLE BUILD")
 app.run()
