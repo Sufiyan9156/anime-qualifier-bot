@@ -1,4 +1,4 @@
-import os, re, time, asyncio
+import os, re, time
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
@@ -38,12 +38,11 @@ def speed_fmt(done, start):
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
-
     if not m.reply_to_message or not m.reply_to_message.photo:
-        return await m.reply("❌ Reply to a photo with /set_thumb")
+        return await m.reply("❌ Reply photo ke saath /set_thumb")
 
     await app.download_media(m.reply_to_message.photo, THUMB_PATH)
-    await m.reply("✅ Thumbnail set successfully")
+    await m.reply("✅ Thumbnail set")
 
 # ================= PARSER =================
 def extract_files(text):
@@ -92,16 +91,16 @@ async def queue(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    title_match = re.search(r"🎺\s*(Episode\s+\d+\s+–\s+.+)", m.text)
-    if not title_match:
+    t = re.search(r"🎺\s*(Episode\s+\d+\s+–\s+.+)", m.text)
+    if not t:
         return
 
-    overall = re.search(r"Episode\s+(\d+)", title_match.group(1)).group(1)
+    overall = re.search(r"Episode\s+(\d+)", t.group(1)).group(1)
     files = extract_files(m.text)
     files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
 
     EPISODE_QUEUE.append({
-        "title": f"<b>🎺 {title_match.group(1)}</b>",
+        "title": f"<b>🎺 {t.group(1)}</b>",
         "overall": overall,
         "files": files
     })
@@ -135,7 +134,7 @@ async def start_upload(client: Client, m: Message):
                 last = time.time()
                 percent = current * 100 / total if total else 0
 
-                asyncio.create_task(
+                client.loop.create_task(
                     prog.edit(
                         f"{stage}\n"
                         f"{make_bar(percent)} {int(percent)}%\n"
@@ -165,5 +164,5 @@ async def start_upload(client: Client, m: Message):
     EPISODE_QUEUE.clear()
     await m.reply("✅ <b>All qualities uploaded</b>", parse_mode=ParseMode.HTML)
 
-print("🤖 Anime Qualifier — FINAL REAL WORKING BUILD")
+print("🤖 Anime Qualifier — RAILWAY SAFE FINAL BUILD")
 app.run()
