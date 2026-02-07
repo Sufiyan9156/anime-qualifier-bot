@@ -112,41 +112,27 @@ def build_caption(title_line: str, filename: str, quality: str, overall: str) ->
     )
 
 # ================= THUMB =================
-@app.on_message(filters.command("set_thumb") & filters.reply)
-async def set_thumb(client, m: Message):
-    if not is_owner(m.from_user.id):
+@app.on_message(filters.command("set_thumb"))
+async def set_thumb(client: Client, m: Message):
+    if not m.from_user or m.from_user.id not in OWNERS:
         return
 
-    if not m.reply_to_message.photo:
-        return await m.reply("❌ Reply with PHOTO only")
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        return await m.reply("❌ PHOTO ke reply me /set_thumb bhejo")
 
-    if os.path.exists(THUMB_PATH):
-        os.remove(THUMB_PATH)
+    try:
+        if os.path.exists(THUMB_PATH):
+            os.remove(THUMB_PATH)
 
-    await client.download_media(m.reply_to_message.photo, THUMB_PATH)
+        await client.download_media(m.reply_to_message.photo, THUMB_PATH)
 
-    if os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
-        os.remove(THUMB_PATH)
-        return await m.reply("❌ Thumbnail > 200KB")
+        if os.path.getsize(THUMB_PATH) > MAX_THUMB_SIZE:
+            os.remove(THUMB_PATH)
+            return await m.reply("❌ Thumbnail 200KB se bada hai")
 
-    await m.reply("✅ Thumbnail saved")
-
-
-@app.on_message(filters.command("view_thumb"))
-async def view_thumb(_, m):
-    if os.path.exists(THUMB_PATH):
-        await m.reply_photo(THUMB_PATH)
-    else:
-        await m.reply("❌ No thumbnail")
-
-
-@app.on_message(filters.command("delete_thumb"))
-async def delete_thumb(_, m):
-    if os.path.exists(THUMB_PATH):
-        os.remove(THUMB_PATH)
-        await m.reply("✅ Thumbnail deleted")
-    else:
-        await m.reply("❌ No thumbnail")
+        await m.reply("✅ Thumbnail set ho gaya")
+    except Exception as e:
+        await m.reply("❌ Thumbnail save failed")
 
 # ================= QUEUE =================
 @app.on_message(filters.text & filters.regex(r"^🎺"))
@@ -163,7 +149,7 @@ async def queue_episode(_, m: Message):
 
 # ================= START =================
 @app.on_message(filters.command("start"))
-async def start_upload(client: Client, m: Message):
+async def start_upload(client: Client, m: Message)
     if not is_owner(m.from_user.id):
         return
 
