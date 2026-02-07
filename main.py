@@ -90,12 +90,19 @@ async def queue_episode(_, m: Message):
         return
 
     blocks = re.split(r"(?=🎺)", m.text)
+
     for block in blocks:
         lines = [l.strip() for l in block.splitlines() if l.strip()]
-        if not lines or not lines[0].startswith("🎺"):
+        if not lines:
             continue
 
-        overall = re.search(r"Episode\s+(\d+)", lines[0]).group(1)
+        title_raw = lines[0]
+        m_title = re.match(r"🎺\s*(Episode\s+\d+\s+–\s+.+)", title_raw)
+        if not m_title:
+            continue
+
+        title = f"<b>🎺 {m_title.group(1)}</b>"
+        overall = re.search(r"Episode\s+(\d+)", title_raw).group(1)
 
         files = []
         for l in lines[1:]:
@@ -104,10 +111,18 @@ async def queue_episode(_, m: Message):
                 continue
             name = m2.group(2)
             q = next((x for x in QUALITY_ORDER if x in name), "480p")
-            files.append({"link": m2.group(1), "filename": name, "quality": q})
+            files.append({
+                "link": m2.group(1),
+                "filename": name,
+                "quality": q
+            })
 
         files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
-        EPISODE_QUEUE.append({"overall": overall, "files": files})
+        EPISODE_QUEUE.append({
+            "title": title,
+            "overall": overall,
+            "files": files
+        })
 
         await m.reply(f"📥 Queued → Episode {overall}", parse_mode=ParseMode.HTML)
 
@@ -120,6 +135,9 @@ async def start_upload(client: Client, m: Message):
         return await m.reply("❌ Queue empty")
 
     for ep in EPISODE_QUEUE:
+        # 🔥 TITLE SEND (FIX)
+        await m.reply(ep["title"], parse_mode=ParseMode.HTML)
+
         for item in ep["files"]:
             src = await safe_get_message(client, item["link"])
             if not src:
@@ -180,5 +198,5 @@ async def start_upload(client: Client, m: Message):
     EPISODE_QUEUE.clear()
     await m.reply("<b>✅ All episodes completed</b>", parse_mode=ParseMode.HTML)
 
-print("🤖 Anime Qualifier — FINAL REAL SPEED BUILD")
+print("🤖 Anime Qualifier — FINAL TITLE FIX BUILD")
 app.run()
