@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import asyncio
 
 from pyrogram import Client, filters
@@ -32,6 +33,17 @@ EPISODE_QUEUE = []
 def is_owner(uid):
     return uid in OWNERS
 
+def make_bar(p):
+    filled = int(p // 10)
+    return "▰" * filled + "▱" * (10 - filled)
+
+async def fake_progress(msg, text, seconds=8):
+    for i in range(1, 11):
+        await msg.edit(
+            f"{text}\n{make_bar(i*10)} {i*10}%"
+        )
+        await asyncio.sleep(seconds / 10)
+
 def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     return (m.group(1), int(m.group(2))) if m else (None, None)
@@ -39,7 +51,7 @@ def parse_tme_link(link):
 async def safe_get_message(client, link):
     chat, mid = parse_tme_link(link)
     try:
-        await client.get_chat(chat)     # peer resolve
+        await client.get_chat(chat)   # peer resolve fix
         return await client.get_messages(chat, mid)
     except Exception as e:
         print(f"❌ Source error: {e}")
@@ -140,27 +152,39 @@ async def start_upload(client: Client, m: Message):
             if not src:
                 continue
 
-            await m.reply("📥 Downloading...")
+            progress_msg = await m.reply("📥 Downloading...\n▱▱▱▱▱▱▱▱▱▱ 0%")
 
-            # 🔥 NO PROGRESS CALLBACK (CRITICAL FIX)
+            dl_task = asyncio.create_task(
+                fake_progress(progress_msg, "📥 Downloading...")
+            )
+
             path = await client.download_media(src)
+            dl_task.cancel()
 
-            await m.reply("📤 Uploading...")
+            ul_task = asyncio.create_task(
+                fake_progress(progress_msg, "📤 Uploading...")
+            )
 
             await client.send_video(
                 m.chat.id,
                 path,
-                caption=build_caption(item["filename"], item["quality"], ep["overall"]),
+                caption=build_caption(
+                    item["filename"],
+                    item["quality"],
+                    ep["overall"]
+                ),
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=False,   # EXACT FILE, NO OPTIMIZE
+                supports_streaming=False,  # 🔥 EXACT FILE SIZE
                 parse_mode=ParseMode.HTML
             )
 
+            ul_task.cancel()
+            await progress_msg.delete()
             os.remove(path)
 
     EPISODE_QUEUE.clear()
     await m.reply("<b>✅ All episodes completed</b>", parse_mode=ParseMode.HTML)
 
-print("🤖 Anime Qualifier — FINAL STABLE RAILWAY BUILD")
+print("🤖 Anime Qualifier — FINAL STABLE PRODUCTION BUILD")
 app.run()
