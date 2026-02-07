@@ -5,7 +5,6 @@ import asyncio
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import MessageNotModified
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -40,22 +39,22 @@ def make_bar(p):
 
 def speed_fmt(done, start):
     sp = done / max(1, time.time() - start)
-    return f"{sp / (1024*1024):05.2f} MB/s"
+    return f"{sp / (1024*1024):.2f} MB/s"
 
 def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     return (m.group(1), int(m.group(2))) if m else (None, None)
 
-# 🎺 TITLE FORMAT (BOLD + ITALIC)
+# 🎺 TITLE FORMAT (HTML SAFE)
 def format_title(raw):
     m = re.match(r"🎺\s*(Episode\s+\d+)\s+–\s+(.+)", raw)
     if not m:
         return raw
     ep, name = m.groups()
-    return f"**🎺 {ep} –** ***{name}***"
+    return f"<b>🎺 {ep} –</b> <i><b>{name}</b></i>"
 
 # ================= PARSER =================
-def parse_multi_episode(text: str):
+def parse_multi_episode(text):
     blocks = re.split(r"(?=🎺)", text)
     episodes = []
 
@@ -99,14 +98,14 @@ def build_caption(filename, quality, overall):
     ).groups()
 
     return (
-        f"**⬡ {anime}**\n"
-        f"**╔══════════════════════╗**\n"
-        f"**‣ Season : {season.zfill(2)}**\n"
-        f"**‣ Episode : {ep.zfill(2)} ({overall})**\n"
-        f"**‣ Audio : Hindi #Official**\n"
-        f"**‣ Quality : {quality}**\n"
-        f"**╚══════════════════════╝**\n"
-        f"**⬡ Uploaded By : {UPLOAD_TAG}**"
+        f"<b>⬡ {anime}</b>\n"
+        f"<b>╔══════════════════════╗</b>\n"
+        f"<b>‣ Season : {season.zfill(2)}</b>\n"
+        f"<b>‣ Episode : {ep.zfill(2)} ({overall})</b>\n"
+        f"<b>‣ Audio : Hindi #Official</b>\n"
+        f"<b>‣ Quality : {quality}</b>\n"
+        f"<b>╚══════════════════════╝</b>\n"
+        f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
     )
 
 # ================= THUMB =================
@@ -115,10 +114,10 @@ async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
     if not m.reply_to_message or not m.reply_to_message.photo:
-        return await m.reply("❌ **Reply photo ke saath /set_thumb bhejo**", parse_mode="markdown")
+        return await m.reply("❌ Reply photo ke saath /set_thumb bhejo")
 
     await app.download_media(m.reply_to_message.photo, THUMB_PATH)
-    await m.reply("✅ **Thumbnail set**", parse_mode="markdown")
+    await m.reply("✅ Thumbnail set")
 
 # ================= QUEUE =================
 @app.on_message(filters.text & filters.regex(r"🎺"))
@@ -128,20 +127,20 @@ async def queue_episode(_, m: Message):
 
     for ep in parse_multi_episode(m.text):
         EPISODE_QUEUE.append(ep)
-        await m.reply(f"📥 **Queued → {ep['title']}**", parse_mode="markdown")
+        await m.reply(f"📥 Queued → {ep['title']}", parse_mode="html")
 
 # ================= CONTROL =================
 @app.on_message(filters.command("stop"))
 async def stop(_, m: Message):
     global PAUSED
     PAUSED = True
-    await m.reply("⏸ **Paused**", parse_mode="markdown")
+    await m.reply("⏸ Paused")
 
 @app.on_message(filters.command("resume"))
 async def resume(_, m: Message):
     global PAUSED
     PAUSED = False
-    await m.reply("▶️ **Resumed**", parse_mode="markdown")
+    await m.reply("▶️ Resumed")
 
 # ================= START =================
 @app.on_message(filters.command("start"))
@@ -149,12 +148,12 @@ async def start_upload(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
     if not EPISODE_QUEUE:
-        return await m.reply("❌ **Queue empty**", parse_mode="markdown")
+        return await m.reply("❌ Queue empty")
 
     final_summary = []
 
     for ep in EPISODE_QUEUE:
-        await m.reply(ep["title"], parse_mode="markdown")
+        await m.reply(ep["title"], parse_mode="html")
         done = []
 
         for item in ep["files"]:
@@ -164,10 +163,7 @@ async def start_upload(client: Client, m: Message):
             chat, mid = parse_tme_link(item["link"])
             src = await client.get_messages(chat, mid)
 
-            prog = await m.reply(
-                "📥 **DOWNLOADING**\n▱▱▱▱▱▱▱▱▱▱ 0%\n⏩ 00.00 MB/s",
-                parse_mode="markdown"
-            )
+            prog = await m.reply("📥 DOWNLOADING\n▱▱▱▱▱▱▱▱▱▱ 0%\n⏩ 0.00 MB/s")
 
             start = time.time()
             last = 0
@@ -179,8 +175,7 @@ async def start_upload(client: Client, m: Message):
                 last = time.time()
                 p = c * 100 / t if t else 0
                 await prog.edit(
-                    f"📥 **DOWNLOADING**\n{make_bar(p)} {p:.0f}%\n⏩ {speed_fmt(c, start)}",
-                    parse_mode="markdown"
+                    f"📥 DOWNLOADING\n{make_bar(p)} {int(p)}%\n⏩ {speed_fmt(c, start)}"
                 )
 
             path = await client.download_media(src, progress=dl_prog)
@@ -195,13 +190,11 @@ async def start_upload(client: Client, m: Message):
                 last = time.time()
                 p = c * 100 / t if t else 0
                 await prog.edit(
-                    f"📤 **UPLOADING**\n{make_bar(p)} {p:.0f}%\n⏩ {speed_fmt(c, start)}",
-                    parse_mode="markdown"
+                    f"📤 UPLOADING\n{make_bar(p)} {int(p)}%\n⏩ {speed_fmt(c, start)}"
                 )
 
             caption = build_caption(item["filename"], item["quality"], ep["overall"])
 
-            # 🔥 FINAL RULE: 2160p = DOCUMENT, REST = VIDEO
             if item["quality"] == "2160p":
                 await client.send_document(
                     m.chat.id,
@@ -210,7 +203,7 @@ async def start_upload(client: Client, m: Message):
                     file_name=item["filename"],
                     thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                     progress=ul_prog,
-                    parse_mode="markdown"
+                    parse_mode="html"
                 )
             else:
                 await client.send_video(
@@ -221,21 +214,21 @@ async def start_upload(client: Client, m: Message):
                     thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                     supports_streaming=True,
                     progress=ul_prog,
-                    parse_mode="markdown"
+                    parse_mode="html"
                 )
 
             await prog.delete()
             os.remove(path)
-            done.append(f"**{item['quality']} ✅**")
+            done.append(f"<b>{item['quality']} ✅</b>")
 
-        final_summary.append(f"{ep['title']}\n" + "\n".join(done))
+        final_summary.append(ep["title"] + "<br>" + "<br>".join(done))
 
     EPISODE_QUEUE.clear()
 
     await m.reply(
-        "\n\n".join(final_summary) + "\n\n✅ **All episodes completed**",
-        parse_mode="markdown"
+        "<br><br>".join(final_summary) + "<br><br><b>✅ All episodes completed</b>",
+        parse_mode="html"
     )
 
-print("🤖 Anime Qualifier — FINAL DOCUMENT/VIDEO SAFE BUILD")
+print("🤖 Anime Qualifier — FINAL HTML SAFE BUILD")
 app.run()
