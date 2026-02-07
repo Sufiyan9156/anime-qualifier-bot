@@ -136,22 +136,23 @@ async def start_upload(client: Client, m: Message):
             chat, mid = parse_tme_link(item["link"])
             src = await client.get_messages(chat, mid)
 
-            prog = await m.reply("📥 DOWNLOADING\n▱▱▱▱▱▱▱▱▱▱ 0%")
+            prog = await m.reply("📥 DOWNLOADING...")
 
             start = time.time()
             last = 0
 
             def progress(cur, total, stage):
                 nonlocal last
-                if time.time() - last < 2:
+                if time.time() - last < 5:
                     return
                 last = time.time()
                 p = cur * 100 / total if total else 0
-                asyncio.create_task(
+                try:
                     prog.edit(
                         f"{stage}\n{make_bar(p)} {int(p)}%\n⏩ {speed_fmt(cur, start)}"
                     )
-                )
+                except:
+                    pass
 
             path = await client.download_media(
                 src,
@@ -165,17 +166,21 @@ async def start_upload(client: Client, m: Message):
                 caption=build_caption(item["filename"], item["quality"], ep["overall"]),
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=False,   # 🔥 KEY FIX
+                supports_streaming=False,
                 progress=lambda c, t: progress(c, t, "📤 UPLOADING"),
                 parse_mode=ParseMode.HTML
             )
 
-            await prog.delete()
+            try:
+                await prog.delete()
+            except:
+                pass
+
             os.remove(path)
 
     EPISODE_QUEUE.clear()
     await m.reply("<b>✅ All episodes completed</b>", parse_mode=ParseMode.HTML)
 
 
-print("🤖 Anime Qualifier — FINAL STABLE BUILD")
+print("🤖 Anime Qualifier — FINAL SAFE BUILD (NO LOOP ERROR)")
 app.run()
