@@ -7,10 +7,12 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import MessageNotModified, FloodWait
 
+# ============ ENV ============
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
 
+# ============ CONFIG ============
 OWNERS = {709844068, 6593273878}
 UPLOAD_TAG = "@SenpaiAnimess"
 
@@ -19,6 +21,7 @@ MAX_THUMB_SIZE = 200 * 1024
 
 QUALITY_ORDER = {"480p": 1, "720p": 2, "1080p": 3, "2160p": 4}
 
+# ============ CLIENT ============
 app = Client(
     "anime_qualifier_user",
     api_id=API_ID,
@@ -28,20 +31,28 @@ app = Client(
 
 EPISODE_QUEUE = []
 
+# ============ HELPERS ============
 def is_owner(uid):
     return uid in OWNERS
 
-def parse_tme_link(link: str):
+
+def make_bar(p):
+    f = int(p // 10)
+    return "█" * f + "░" * (10 - f)
+
+
+def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     return (m.group(1), int(m.group(2))) if m else (None, None)
 
-def parse_episode_message(text: str):
+
+def parse_episode_message(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines or not lines[0].startswith("🎺"):
         return None
 
     t = re.search(r"Episode\s+(\d+)", lines[0])
-    overall = t.group(1) if t else "001"
+    overall = t.group(1)
 
     files = []
     for line in lines[1:]:
@@ -49,14 +60,19 @@ def parse_episode_message(text: str):
         if not m:
             continue
 
-        filename = m.group(2)
-        q = "2160p" if "2160" in filename else \
-            "1080p" if "1080" in filename else \
-            "720p" if "720" in filename else "480p"
+        name = m.group(2)
+        if "2160" in name:
+            q = "2160p"
+        elif "1080" in name:
+            q = "1080p"
+        elif "720" in name:
+            q = "720p"
+        else:
+            q = "480p"
 
         files.append({
             "link": m.group(1),
-            "filename": filename,
+            "filename": name,
             "quality": q
         })
 
@@ -66,103 +82,120 @@ def parse_episode_message(text: str):
         "files": sorted(files, key=lambda x: QUALITY_ORDER[x["quality"]])
     }
 
+
 def build_caption(filename, quality, overall):
     m = re.search(r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)", filename)
-    anime, season, ep = m.groups() if m else ("Anime", "01", "01")
+    anime, season, ep = m.groups()
 
     return (
-        f"⬡ {anime}\n"
-        f"╔══════════════════════╗\n"
-        f"‣ Season : {season.zfill(2)}\n"
-        f"‣ Episode : {ep.zfill(2)} ({overall})\n"
-        f"‣ Audio : Hindi #Official\n"
-        f"‣ Quality : {quality}\n"
-        f"╚══════════════════════╝\n"
-        f"⬡ Uploaded By : {UPLOAD_TAG}"
+        f"**⬡ {anime}**\n"
+        f"**╔══════════════════════╗**\n"
+        f"**‣ Season : {season.zfill(2)}**\n"
+        f"**‣ Episode : {ep.zfill(2)} ({overall})**\n"
+        f"**‣ Audio : Hindi #Official**\n"
+        f"**‣ Quality : {quality}**\n"
+        f"**╚══════════════════════╝**\n"
+        f"**⬡ Uploaded By : {UPLOAD_TAG}**"
     )
 
-def make_progress_bar(percent):
-    filled = int(percent // 10)
-    return "■" * filled + "▢" * (10 - filled)
+# ============ THUMB ============
+@app.on_message(filters.command("set_thumb"))
+async def set_thumb(_, m: Message):
+    if not m.from_user or not is_owner(m.from_user.id):
+        return
 
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        return await m.reply("❌ Photo ke reply me /set_thumb bhejo")
+
+    await app.download_media(m.reply_to_message.photo, THUMB_PATH)
+    await m.reply("✅ Thumbnail set successfully")
+
+
+@app.on_message(filters.command("view_thumb"))
+async def view_thumb(_, m: Message):
+    if os.path.exists(THUMB_PATH):
+        await m.reply_photo(THUMB_PATH, caption="🖼 Current Thumbnail")
+    else:
+        await m.reply("❌ Thumbnail set nahi hai")
+
+# ============ QUEUE ============
 @app.on_message(filters.text & filters.regex(r"^🎺"))
 async def queue_episode(_, m: Message):
     if not is_owner(m.from_user.id):
         return
+
     data = parse_episode_message(m.text)
     if data:
         EPISODE_QUEUE.append(data)
         await m.reply(f"📥 Queued → {data['title']}")
 
+# ============ START ============
 @app.on_message(filters.command("start"))
 async def start_upload(client: Client, m: Message):
     if not is_owner(m.from_user.id):
         return
+
     if not EPISODE_QUEUE:
         return await m.reply("❌ Queue empty")
 
-    status = await m.reply("🚀 Starting upload...")
-    last_update = 0
+    status = await m.reply("🚀 Starting...")
+    last_edit = 0
 
-    async def progress(current, total, stage):
-        nonlocal last_update
+    async def progress(cur, total, stage, start):
+        nonlocal last_edit
         now = time.time()
-        if now - last_update < 8:
+        if now - last_edit < 6:
             return
-        last_update = now
+        last_edit = now
 
-        percent = current * 100 / total if total else 0
-        bar = make_progress_bar(percent)
-        speed = (current / max(1, now - start_time)) / (1024 * 1024)
+        pct = cur * 100 / total if total else 0
+        bar = make_bar(pct)
+        speed = (cur / max(1, now - start)) / (1024 * 1024)
 
         try:
             await status.edit(
                 f"**{stage}**\n"
-                f"`{bar}` {percent:.1f}%\n"
-                f"⚡ {speed:.2f} MB/s"
+                f"**{bar} {pct:.1f}%**\n"
+                f"**⚡ {speed:.2f} MB/s**"
             )
-        except (MessageNotModified, FloodWait):
+        except MessageNotModified:
             pass
 
     for ep in EPISODE_QUEUE:
         await m.reply(ep["title"])
+        done_lines = []
 
         for item in ep["files"]:
-            try:
-                chat, msg_id = parse_tme_link(item["link"])
-                src = await client.get_messages(chat, msg_id)
+            chat, mid = parse_tme_link(item["link"])
+            src = await client.get_messages(chat, mid)
 
-                start_time = time.time()
-                await status.edit("⬇️ Downloading...")
-                path = await client.download_media(
-                    src,
-                    progress=lambda c, t: progress(c, t, "⬇️ Downloading")
-                )
+            start = time.time()
+            path = await client.download_media(
+                src,
+                progress=lambda c, t: progress(c, t, "⬇️ DOWNLOADING", start)
+            )
 
-                start_time = time.time()
-                await status.edit("⬆️ Uploading...")
-                await client.send_video(
-                    m.chat.id,
-                    path,
-                    caption=build_caption(
-                        item["filename"],
-                        item["quality"],
-                        ep["overall"]
-                    ),
-                    file_name=item["filename"],
-                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                    supports_streaming=True,
-                    progress=lambda c, t: progress(c, t, "⬆️ Uploading")
-                )
+            start = time.time()
+            await client.send_video(
+                m.chat.id,
+                path,
+                caption=build_caption(item["filename"], item["quality"], ep["overall"]),
+                file_name=item["filename"],
+                thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                supports_streaming=True,
+                progress=lambda c, t: progress(c, t, "⬆️ UPLOADING", start)
+            )
 
-                os.remove(path)
-                await asyncio.sleep(5)
+            os.remove(path)
+            done_lines.append(f"{item['filename']} ✅")
+            await asyncio.sleep(3)
 
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 5)
+        await m.reply(
+            f"{ep['title']}\n\n" + "\n".join(done_lines)
+        )
 
     EPISODE_QUEUE.clear()
-    await status.edit("✅ All uploads completed")
+    await status.edit("✅ All episodes completed")
 
-print("🤖 Anime Qualifier — PROGRESS SAFE BUILD")
+print("🤖 Anime Qualifier — FINAL HUMAN LOGIC BUILD")
 app.run()
