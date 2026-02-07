@@ -37,12 +37,21 @@ def make_bar(p):
     filled = int(p // 10)
     return "▰" * filled + "▱" * (10 - filled)
 
-async def fake_progress(msg, text, seconds=8):
+def speed_fmt(fake_mb, start):
+    elapsed = max(1, time.time() - start)
+    speed = fake_mb / elapsed
+    return f"{speed:.2f} MB/s"
+
+async def fake_progress(msg, label):
+    start = time.time()
     for i in range(1, 11):
+        fake_mb = i * 50  # fake speed only (UI)
         await msg.edit(
-            f"{text}\n{make_bar(i*10)} {i*10}%"
+            f"{label}\n"
+            f"{make_bar(i*10)} {i*10}%\n"
+            f"⏩ {speed_fmt(fake_mb, start)}"
         )
-        await asyncio.sleep(seconds / 10)
+        await asyncio.sleep(0.8)
 
 def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
@@ -51,7 +60,7 @@ def parse_tme_link(link):
 async def safe_get_message(client, link):
     chat, mid = parse_tme_link(link)
     try:
-        await client.get_chat(chat)   # peer resolve fix
+        await client.get_chat(chat)
         return await client.get_messages(chat, mid)
     except Exception as e:
         print(f"❌ Source error: {e}")
@@ -98,7 +107,7 @@ def parse_multi_episode(text):
 
     return episodes
 
-# ================= CAPTION =================
+# ================= CAPTION (LINE SAFE) =================
 def build_caption(filename, quality, overall):
     anime, season, ep = re.search(
         r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)", filename
@@ -106,12 +115,12 @@ def build_caption(filename, quality, overall):
 
     return (
         f"<b>⬡ {anime}</b>\n"
-        f"<b>╔══════════════════════╗</b>\n"
+        f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
         f"<b>‣ Season : {season.zfill(2)}</b>\n"
         f"<b>‣ Episode : {ep.zfill(2)} ({overall})</b>\n"
         f"<b>‣ Audio : Hindi #Official</b>\n"
         f"<b>‣ Quality : {quality}</b>\n"
-        f"<b>╚══════════════════════╝</b>\n"
+        f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
         f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
     )
 
@@ -152,17 +161,16 @@ async def start_upload(client: Client, m: Message):
             if not src:
                 continue
 
-            progress_msg = await m.reply("📥 Downloading...\n▱▱▱▱▱▱▱▱▱▱ 0%")
+            progress = await m.reply("📥 Downloading...\n▱▱▱▱▱▱▱▱▱▱ 0%")
 
             dl_task = asyncio.create_task(
-                fake_progress(progress_msg, "📥 Downloading...")
+                fake_progress(progress, "📥 Downloading...")
             )
-
             path = await client.download_media(src)
             dl_task.cancel()
 
             ul_task = asyncio.create_task(
-                fake_progress(progress_msg, "📤 Uploading...")
+                fake_progress(progress, "📤 Uploading...")
             )
 
             await client.send_video(
@@ -175,16 +183,16 @@ async def start_upload(client: Client, m: Message):
                 ),
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=False,  # 🔥 EXACT FILE SIZE
+                supports_streaming=False,  # EXACT FILE
                 parse_mode=ParseMode.HTML
             )
 
             ul_task.cancel()
-            await progress_msg.delete()
+            await progress.delete()
             os.remove(path)
 
     EPISODE_QUEUE.clear()
     await m.reply("<b>✅ All episodes completed</b>", parse_mode=ParseMode.HTML)
 
-print("🤖 Anime Qualifier — FINAL STABLE PRODUCTION BUILD")
+print("🤖 Anime Qualifier — FINAL PRODUCTION BUILD")
 app.run()
