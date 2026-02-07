@@ -46,6 +46,14 @@ def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     return (m.group(1), int(m.group(2))) if m else (None, None)
 
+# 🎺 TITLE FORMATTER (BOLD + ITALIC)
+def format_title(raw):
+    m = re.match(r"🎺\s*(Episode\s+\d+)\s+–\s+(.+)", raw)
+    if not m:
+        return raw
+    ep, name = m.groups()
+    return f"**🎺 {ep} –** ***{name}***"
+
 # ========= MULTI EP PARSER =========
 def parse_multi_episode(text: str):
     blocks = re.split(r"(?=🎺)", text)
@@ -56,8 +64,9 @@ def parse_multi_episode(text: str):
         if not lines or not lines[0].startswith("🎺"):
             continue
 
-        title = lines[0]
-        overall = re.search(r"Episode\s+(\d+)", title).group(1)
+        raw_title = lines[0]
+        title = format_title(raw_title)
+        overall = re.search(r"Episode\s+(\d+)", raw_title).group(1)
 
         files = []
         for l in lines[1:]:
@@ -135,9 +144,11 @@ async def start_upload(client: Client, m: Message):
     if not EPISODE_QUEUE:
         return await m.reply("❌ Queue empty")
 
+    final_summary = []
+
     for ep in EPISODE_QUEUE:
         await m.reply(ep["title"])
-        summary = []
+        qualities_done = []
 
         for item in ep["files"]:
             while PAUSED:
@@ -147,9 +158,7 @@ async def start_upload(client: Client, m: Message):
             src = await client.get_messages(chat, mid)
 
             progress_msg = await m.reply(
-                "📥 **DOWNLOADING**\n"
-                "▱▱▱▱▱▱▱▱▱▱ 0%\n"
-                "⏩ 00.00 MB/s"
+                "📥 **DOWNLOADING**\n▱▱▱▱▱▱▱▱▱▱ 0%\n⏩ 00.00 MB/s"
             )
 
             start = time.time()
@@ -162,9 +171,7 @@ async def start_upload(client: Client, m: Message):
                 last = time.time()
                 pct = cur * 100 / total if total else 0
                 await progress_msg.edit(
-                    f"📥 **DOWNLOADING**\n"
-                    f"{make_bar(pct)} {pct:.0f}%\n"
-                    f"⏩ {speed_fmt(cur, start)}"
+                    f"📥 **DOWNLOADING**\n{make_bar(pct)} {pct:.0f}%\n⏩ {speed_fmt(cur, start)}"
                 )
 
             path = await client.download_media(src, progress=dl_progress)
@@ -179,9 +186,7 @@ async def start_upload(client: Client, m: Message):
                 last = time.time()
                 pct = cur * 100 / total if total else 0
                 await progress_msg.edit(
-                    f"📤 **UPLOADING**\n"
-                    f"{make_bar(pct)} {pct:.0f}%\n"
-                    f"⏩ {speed_fmt(cur, start)}"
+                    f"📤 **UPLOADING**\n{make_bar(pct)} {pct:.0f}%\n⏩ {speed_fmt(cur, start)}"
                 )
 
             await client.send_video(
@@ -196,12 +201,17 @@ async def start_upload(client: Client, m: Message):
 
             await progress_msg.delete()
             os.remove(path)
-            summary.append(f"{item['quality']} ✅")
+            qualities_done.append(f"{item['quality']} ✅")
 
-        await m.reply(f"{ep['title']}\n" + "\n".join(summary))
+        final_summary.append(
+            f"{ep['title']}\n" + "\n".join(qualities_done)
+        )
 
     EPISODE_QUEUE.clear()
-    await m.reply("✅ All episodes completed")
 
-print("🤖 Anime Qualifier — PROGRESS UX FIXED BUILD")
+    await m.reply(
+        "\n\n".join(final_summary) + "\n\n✅ **All episodes completed**"
+    )
+
+print("🤖 Anime Qualifier — FINAL POLISHED BUILD")
 app.run()
