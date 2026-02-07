@@ -37,21 +37,10 @@ def make_bar(p):
     filled = int(p // 10)
     return "▰" * filled + "▱" * (10 - filled)
 
-def speed_fmt(fake_mb, start):
+def speed_fmt(done, start):
     elapsed = max(1, time.time() - start)
-    speed = fake_mb / elapsed
-    return f"{speed:.2f} MB/s"
-
-async def fake_progress(msg, label):
-    start = time.time()
-    for i in range(1, 11):
-        fake_mb = i * 50  # fake speed only (UI)
-        await msg.edit(
-            f"{label}\n"
-            f"{make_bar(i*10)} {i*10}%\n"
-            f"⏩ {speed_fmt(fake_mb, start)}"
-        )
-        await asyncio.sleep(0.8)
+    speed = done / elapsed
+    return f"{speed / (1024*1024):.2f} MB/s"
 
 def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
@@ -66,48 +55,7 @@ async def safe_get_message(client, link):
         print(f"❌ Source error: {e}")
         return None
 
-# ================= TITLE =================
-def format_title(raw):
-    m = re.match(r"🎺\s*(Episode\s+\d+)\s+–\s+(.+)", raw)
-    if not m:
-        return f"<b>{raw}</b>"
-    ep, name = m.groups()
-    return f"<b>🎺 {ep} – {name}</b>"
-
-# ================= PARSER =================
-def parse_multi_episode(text):
-    blocks = re.split(r"(?=🎺)", text)
-    episodes = []
-
-    for block in blocks:
-        lines = [l.strip() for l in block.splitlines() if l.strip()]
-        if not lines or not lines[0].startswith("🎺"):
-            continue
-
-        raw_title = lines[0]
-        title = format_title(raw_title)
-        overall = re.search(r"Episode\s+(\d+)", raw_title).group(1)
-
-        files = []
-        for l in lines[1:]:
-            m = re.search(r"(https://t\.me/\S+)\s+-n\s+(.+)", l)
-            if not m:
-                continue
-
-            name = m.group(2)
-            q = next((x for x in QUALITY_ORDER if x in name), "480p")
-            files.append({
-                "link": m.group(1),
-                "filename": name,
-                "quality": q
-            })
-
-        files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
-        episodes.append({"title": title, "overall": overall, "files": files})
-
-    return episodes
-
-# ================= CAPTION (LINE SAFE) =================
+# ================= CAPTION =================
 def build_caption(filename, quality, overall):
     anime, season, ep = re.search(
         r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)", filename
@@ -141,9 +89,27 @@ async def queue_episode(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    for ep in parse_multi_episode(m.text):
-        EPISODE_QUEUE.append(ep)
-        await m.reply(f"📥 Queued → {ep['title']}", parse_mode=ParseMode.HTML)
+    blocks = re.split(r"(?=🎺)", m.text)
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines or not lines[0].startswith("🎺"):
+            continue
+
+        overall = re.search(r"Episode\s+(\d+)", lines[0]).group(1)
+
+        files = []
+        for l in lines[1:]:
+            m2 = re.search(r"(https://t\.me/\S+)\s+-n\s+(.+)", l)
+            if not m2:
+                continue
+            name = m2.group(2)
+            q = next((x for x in QUALITY_ORDER if x in name), "480p")
+            files.append({"link": m2.group(1), "filename": name, "quality": q})
+
+        files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
+        EPISODE_QUEUE.append({"overall": overall, "files": files})
+
+        await m.reply(f"📥 Queued → Episode {overall}", parse_mode=ParseMode.HTML)
 
 # ================= START =================
 @app.on_message(filters.command("start"))
@@ -154,8 +120,6 @@ async def start_upload(client: Client, m: Message):
         return await m.reply("❌ Queue empty")
 
     for ep in EPISODE_QUEUE:
-        await m.reply(ep["title"], parse_mode=ParseMode.HTML)
-
         for item in ep["files"]:
             src = await safe_get_message(client, item["link"])
             if not src:
@@ -163,15 +127,37 @@ async def start_upload(client: Client, m: Message):
 
             progress = await m.reply("📥 Downloading...\n▱▱▱▱▱▱▱▱▱▱ 0%")
 
-            dl_task = asyncio.create_task(
-                fake_progress(progress, "📥 Downloading...")
-            )
-            path = await client.download_media(src)
-            dl_task.cancel()
+            start = time.time()
+            last = 0
 
-            ul_task = asyncio.create_task(
-                fake_progress(progress, "📤 Uploading...")
-            )
+            async def dl_progress(cur, total):
+                nonlocal last
+                if time.time() - last < 2:
+                    return
+                last = time.time()
+                pct = cur * 100 / total if total else 0
+                await progress.edit(
+                    f"📥 Downloading...\n"
+                    f"{make_bar(pct)} {int(pct)}%\n"
+                    f"⏩ {speed_fmt(cur, start)}"
+                )
+
+            path = await client.download_media(src, progress=dl_progress)
+
+            start = time.time()
+            last = 0
+
+            async def ul_progress(cur, total):
+                nonlocal last
+                if time.time() - last < 2:
+                    return
+                last = time.time()
+                pct = cur * 100 / total if total else 0
+                await progress.edit(
+                    f"📤 Uploading...\n"
+                    f"{make_bar(pct)} {int(pct)}%\n"
+                    f"⏩ {speed_fmt(cur, start)}"
+                )
 
             await client.send_video(
                 m.chat.id,
@@ -183,17 +169,16 @@ async def start_upload(client: Client, m: Message):
                 ),
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=False,  # EXACT FILE
+                supports_streaming=False,
+                progress=ul_progress,
                 parse_mode=ParseMode.HTML
             )
 
-            ul_task.cancel()
             await progress.delete()
             os.remove(path)
 
     EPISODE_QUEUE.clear()
     await m.reply("<b>✅ All episodes completed</b>", parse_mode=ParseMode.HTML)
 
-print("🤖 Anime Qualifier — FINAL PRODUCTION BUILD")
+print("🤖 Anime Qualifier — FINAL REAL SPEED BUILD")
 app.run()
-
