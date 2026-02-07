@@ -5,6 +5,7 @@ import asyncio
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.enums import ParseMode
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -45,13 +46,13 @@ def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     return (m.group(1), int(m.group(2))) if m else (None, None)
 
-# 🎺 TITLE FORMAT (HTML SAFE)
+# 🎺 TITLE FORMATTER (BOLD + ITALIC)
 def format_title(raw):
     m = re.match(r"🎺\s*(Episode\s+\d+)\s+–\s+(.+)", raw)
     if not m:
         return raw
     ep, name = m.groups()
-    return f"<b>🎺 {ep} –</b> <i><b>{name}</b></i>"
+    return f"<b>🎺 {ep} –</b> <b><i>{name}</i></b>"
 
 # ================= PARSER =================
 def parse_multi_episode(text):
@@ -127,7 +128,7 @@ async def queue_episode(_, m: Message):
 
     for ep in parse_multi_episode(m.text):
         EPISODE_QUEUE.append(ep)
-        await m.reply(f"📥 Queued → {ep['title']}", parse_mode="html")
+        await m.reply(f"📥 Queued → {ep['title']}", parse_mode=ParseMode.HTML)
 
 # ================= CONTROL =================
 @app.on_message(filters.command("stop"))
@@ -153,7 +154,7 @@ async def start_upload(client: Client, m: Message):
     final_summary = []
 
     for ep in EPISODE_QUEUE:
-        await m.reply(ep["title"], parse_mode="html")
+        await m.reply(ep["title"], parse_mode=ParseMode.HTML)
         done = []
 
         for item in ep["files"]:
@@ -203,7 +204,7 @@ async def start_upload(client: Client, m: Message):
                     file_name=item["filename"],
                     thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                     progress=ul_prog,
-                    parse_mode="html"
+                    parse_mode=ParseMode.HTML
                 )
             else:
                 await client.send_video(
@@ -214,7 +215,7 @@ async def start_upload(client: Client, m: Message):
                     thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                     supports_streaming=True,
                     progress=ul_prog,
-                    parse_mode="html"
+                    parse_mode=ParseMode.HTML
                 )
 
             await prog.delete()
@@ -227,8 +228,8 @@ async def start_upload(client: Client, m: Message):
 
     await m.reply(
         "<br><br>".join(final_summary) + "<br><br><b>✅ All episodes completed</b>",
-        parse_mode="html"
+        parse_mode=ParseMode.HTML
     )
 
-print("🤖 Anime Qualifier — FINAL HTML SAFE BUILD")
+print("🤖 Anime Qualifier — FINAL PYROGRAM v2 SAFE BUILD")
 app.run()
