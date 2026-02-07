@@ -1,6 +1,5 @@
 import os
 import re
-import time
 import asyncio
 
 from pyrogram import Client, filters
@@ -28,19 +27,10 @@ app = Client(
 )
 
 EPISODE_QUEUE = []
-PAUSED = False
 
 # ================= HELPERS =================
 def is_owner(uid):
     return uid in OWNERS
-
-def make_bar(p):
-    f = int(p // 10)
-    return "▰" * f + "▱" * (10 - f)
-
-def speed_fmt(done, start):
-    sp = done / max(1, time.time() - start)
-    return f"{sp / (1024*1024):.2f} MB/s"
 
 def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
@@ -49,7 +39,7 @@ def parse_tme_link(link):
 async def safe_get_message(client, link):
     chat, mid = parse_tme_link(link)
     try:
-        await client.get_chat(chat)   # peer resolve fix
+        await client.get_chat(chat)     # peer resolve
         return await client.get_messages(chat, mid)
     except Exception as e:
         print(f"❌ Source error: {e}")
@@ -82,6 +72,7 @@ def parse_multi_episode(text):
             m = re.search(r"(https://t\.me/\S+)\s+-n\s+(.+)", l)
             if not m:
                 continue
+
             name = m.group(2)
             q = next((x for x in QUALITY_ORDER if x in name), "480p")
             files.append({
@@ -149,25 +140,12 @@ async def start_upload(client: Client, m: Message):
             if not src:
                 continue
 
-            prog = await m.reply("📥 DOWNLOADING\n▱▱▱▱▱▱▱▱▱▱ 0%")
+            await m.reply("📥 Downloading...")
 
-            start = time.time()
-            last = 0
+            # 🔥 NO PROGRESS CALLBACK (CRITICAL FIX)
+            path = await client.download_media(src)
 
-            async def progress(c, t, stage):
-                nonlocal last
-                if time.time() - last < 3:
-                    return
-                last = time.time()
-                p = c * 100 / t if t else 0
-                await prog.edit(
-                    f"{stage}\n{make_bar(p)} {int(p)}%\n⏩ {speed_fmt(c, start)}"
-                )
-
-            path = await client.download_media(
-                src,
-                progress=lambda c, t: progress(c, t, "📥 DOWNLOADING")
-            )
+            await m.reply("📤 Uploading...")
 
             await client.send_video(
                 m.chat.id,
@@ -175,16 +153,14 @@ async def start_upload(client: Client, m: Message):
                 caption=build_caption(item["filename"], item["quality"], ep["overall"]),
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=False,   # 🔥 MOST IMPORTANT
-                progress=lambda c, t: progress(c, t, "📤 UPLOADING"),
+                supports_streaming=False,   # EXACT FILE, NO OPTIMIZE
                 parse_mode=ParseMode.HTML
             )
 
-            await prog.delete()
             os.remove(path)
 
     EPISODE_QUEUE.clear()
     await m.reply("<b>✅ All episodes completed</b>", parse_mode=ParseMode.HTML)
 
-print("🤖 Anime Qualifier — FINAL STABLE BUILD")
+print("🤖 Anime Qualifier — FINAL STABLE RAILWAY BUILD")
 app.run()
