@@ -5,7 +5,7 @@ import asyncio
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import MessageNotModified, FloodWait
+from pyrogram.errors import MessageNotModified
 
 # ========= ENV =========
 API_ID = int(os.environ["API_ID"])
@@ -35,14 +35,18 @@ def is_owner(uid):
     return uid in OWNERS
 
 def make_bar(p):
-    f = int(p // 10)
-    return "█" * f + "░" * (10 - f)
+    filled = int(p // 10)
+    return "▰" * filled + "▱" * (10 - filled)
+
+def speed_fmt(done, start):
+    sp = done / max(1, time.time() - start)
+    return f"{sp / (1024*1024):05.2f} MB/s"
 
 def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     return (m.group(1), int(m.group(2))) if m else (None, None)
 
-# 🔥 MULTI-EPISODE PARSER
+# ========= MULTI EP PARSER =========
 def parse_multi_episode(text: str):
     blocks = re.split(r"(?=🎺)", text)
     episodes = []
@@ -53,18 +57,15 @@ def parse_multi_episode(text: str):
             continue
 
         title = lines[0]
-        t = re.search(r"Episode\s+(\d+)", title)
-        overall = t.group(1)
+        overall = re.search(r"Episode\s+(\d+)", title).group(1)
 
         files = []
         for l in lines[1:]:
             m = re.search(r"(https://t\.me/\S+)\s+-n\s+(.+)", l)
             if not m:
                 continue
-
             name = m.group(2)
             q = next((x for x in QUALITY_ORDER if x in name), "480p")
-
             files.append({
                 "link": m.group(1),
                 "filename": name,
@@ -72,18 +73,14 @@ def parse_multi_episode(text: str):
             })
 
         files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
-
-        episodes.append({
-            "title": title,
-            "overall": overall,
-            "files": files
-        })
+        episodes.append({"title": title, "overall": overall, "files": files})
 
     return episodes
 
 def build_caption(filename, quality, overall):
-    m = re.search(r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)", filename)
-    anime, season, ep = m.groups()
+    anime, season, ep = re.search(
+        r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)", filename
+    ).groups()
 
     return (
         f"**⬡ {anime}**\n"
@@ -113,8 +110,7 @@ async def queue_episode(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    eps = parse_multi_episode(m.text)
-    for ep in eps:
+    for ep in parse_multi_episode(m.text):
         EPISODE_QUEUE.append(ep)
         await m.reply(f"📥 Queued → {ep['title']}")
 
@@ -123,13 +119,13 @@ async def queue_episode(_, m: Message):
 async def stop(_, m: Message):
     global PAUSED
     PAUSED = True
-    await m.reply("⏸ Upload paused")
+    await m.reply("⏸ Paused")
 
 @app.on_message(filters.command("resume"))
 async def resume(_, m: Message):
     global PAUSED
     PAUSED = False
-    await m.reply("▶️ Upload resumed")
+    await m.reply("▶️ Resumed")
 
 # ========= START =========
 @app.on_message(filters.command("start"))
@@ -150,34 +146,44 @@ async def start_upload(client: Client, m: Message):
             chat, mid = parse_tme_link(item["link"])
             src = await client.get_messages(chat, mid)
 
-            status = await m.reply("⬇️ Starting download...")
-            start = time.time()
-            last = 0
-
-            async def progress(cur, total, stage):
-                nonlocal last
-                now = time.time()
-                if now - last < 5:
-                    return
-                last = now
-                pct = cur * 100 / total if total else 0
-                bar = make_bar(pct)
-                speed = (cur / max(1, now - start)) / (1024 * 1024)
-                try:
-                    await status.edit(
-                        f"**{stage}**\n"
-                        f"**{bar} {pct:.1f}%**\n"
-                        f"**⚡ {speed:.2f} MB/s**"
-                    )
-                except MessageNotModified:
-                    pass
-
-            path = await client.download_media(
-                src,
-                progress=lambda c, t: progress(c, t, "⬇️ DOWNLOADING")
+            progress_msg = await m.reply(
+                "📥 **DOWNLOADING**\n"
+                "▱▱▱▱▱▱▱▱▱▱ 0%\n"
+                "⏩ 00.00 MB/s"
             )
 
             start = time.time()
+            last = 0
+
+            async def dl_progress(cur, total):
+                nonlocal last
+                if time.time() - last < 3:
+                    return
+                last = time.time()
+                pct = cur * 100 / total if total else 0
+                await progress_msg.edit(
+                    f"📥 **DOWNLOADING**\n"
+                    f"{make_bar(pct)} {pct:.0f}%\n"
+                    f"⏩ {speed_fmt(cur, start)}"
+                )
+
+            path = await client.download_media(src, progress=dl_progress)
+
+            start = time.time()
+            last = 0
+
+            async def ul_progress(cur, total):
+                nonlocal last
+                if time.time() - last < 3:
+                    return
+                last = time.time()
+                pct = cur * 100 / total if total else 0
+                await progress_msg.edit(
+                    f"📤 **UPLOADING**\n"
+                    f"{make_bar(pct)} {pct:.0f}%\n"
+                    f"⏩ {speed_fmt(cur, start)}"
+                )
+
             await client.send_video(
                 m.chat.id,
                 path,
@@ -185,9 +191,10 @@ async def start_upload(client: Client, m: Message):
                 file_name=item["filename"],
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                 supports_streaming=True,
-                progress=lambda c, t: progress(c, t, "⬆️ UPLOADING")
+                progress=ul_progress
             )
 
+            await progress_msg.delete()
             os.remove(path)
             summary.append(f"{item['quality']} ✅")
 
@@ -196,5 +203,5 @@ async def start_upload(client: Client, m: Message):
     EPISODE_QUEUE.clear()
     await m.reply("✅ All episodes completed")
 
-print("🤖 Anime Qualifier — FINAL CORRECT LOGIC BUILD")
+print("🤖 Anime Qualifier — PROGRESS UX FIXED BUILD")
 app.run()
