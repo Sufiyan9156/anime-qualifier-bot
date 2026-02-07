@@ -46,13 +46,13 @@ def parse_tme_link(link):
     m = re.search(r"https://t\.me/([^/]+)/(\d+)", link)
     return (m.group(1), int(m.group(2))) if m else (None, None)
 
-# 🎺 TITLE FORMATTER (BOLD + ITALIC)
+# ========= TITLE FORMAT =========
 def format_title(raw):
     m = re.match(r"🎺\s*(Episode\s+\d+)\s+–\s+(.+)", raw)
     if not m:
         return raw
     ep, name = m.groups()
-    return f"**🎺 {ep} –** ***{name}***"
+    return f"🎺 {ep} – {name}"
 
 # ========= MULTI EP PARSER =========
 def parse_multi_episode(text: str):
@@ -73,8 +73,10 @@ def parse_multi_episode(text: str):
             m = re.search(r"(https://t\.me/\S+)\s+-n\s+(.+)", l)
             if not m:
                 continue
+
             name = m.group(2)
             q = next((x for x in QUALITY_ORDER if x in name), "480p")
+
             files.append({
                 "link": m.group(1),
                 "filename": name,
@@ -82,10 +84,15 @@ def parse_multi_episode(text: str):
             })
 
         files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
-        episodes.append({"title": title, "overall": overall, "files": files})
+        episodes.append({
+            "title": title,
+            "overall": overall,
+            "files": files
+        })
 
     return episodes
 
+# ========= CAPTION =========
 def build_caption(filename, quality, overall):
     anime, season, ep = re.search(
         r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)", filename
@@ -121,7 +128,7 @@ async def queue_episode(_, m: Message):
 
     for ep in parse_multi_episode(m.text):
         EPISODE_QUEUE.append(ep)
-        await m.reply(f"📥 Queued → {ep['title']}")
+        await m.reply(f"📥 Queued → {ep['title']}", parse_mode=None)
 
 # ========= CONTROL =========
 @app.on_message(filters.command("stop"))
@@ -147,7 +154,7 @@ async def start_upload(client: Client, m: Message):
     final_summary = []
 
     for ep in EPISODE_QUEUE:
-        await m.reply(ep["title"])
+        await m.reply(ep["title"], parse_mode=None)
         qualities_done = []
 
         for item in ep["files"]:
@@ -189,15 +196,26 @@ async def start_upload(client: Client, m: Message):
                     f"📤 **UPLOADING**\n{make_bar(pct)} {pct:.0f}%\n⏩ {speed_fmt(cur, start)}"
                 )
 
-            await client.send_video(
-                m.chat.id,
-                path,
-                caption=build_caption(item["filename"], item["quality"], ep["overall"]),
-                file_name=item["filename"],
-                thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=True,
-                progress=ul_progress
-            )
+            # 🔥 FIX: 2160p AS DOCUMENT (NO RE-ENCODE)
+            if item["quality"] == "2160p":
+                await client.send_document(
+                    m.chat.id,
+                    path,
+                    caption=build_caption(item["filename"], item["quality"], ep["overall"]),
+                    file_name=item["filename"],
+                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                    progress=ul_progress
+                )
+            else:
+                await client.send_video(
+                    m.chat.id,
+                    path,
+                    caption=build_caption(item["filename"], item["quality"], ep["overall"]),
+                    file_name=item["filename"],
+                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                    supports_streaming=False,
+                    progress=ul_progress
+                )
 
             await progress_msg.delete()
             os.remove(path)
@@ -210,8 +228,9 @@ async def start_upload(client: Client, m: Message):
     EPISODE_QUEUE.clear()
 
     await m.reply(
-        "\n\n".join(final_summary) + "\n\n✅ **All episodes completed**"
+        "\n\n".join(final_summary) + "\n\n✅ **All episodes completed**",
+        parse_mode=None
     )
 
-print("🤖 Anime Qualifier — FINAL POLISHED BUILD")
+print("🤖 Anime Qualifier — FINAL STABLE LEACHING BUILD")
 app.run()
