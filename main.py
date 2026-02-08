@@ -1,16 +1,16 @@
-import os, re, time, asyncio, sys, signal
+import os, re, sys, asyncio, signal, time
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
 from pyrogram.errors.exceptions.not_acceptable_406 import AuthKeyDuplicated
 
-# ================= LOCK (CRITICAL FIX) =================
-LOCK_FILE = "/tmp/anime_qualifier.lock"
+# ================= HARD LOCK =================
+LOCK_FILE = "/tmp/perfect01.lock"
 
 def acquire_lock():
     if os.path.exists(LOCK_FILE):
-        print("❌ Another instance already running. Exiting.")
+        print("AUTH_KEY_DUPLICATED — already running")
         sys.exit(0)
     with open(LOCK_FILE, "w") as f:
         f.write(str(os.getpid()))
@@ -22,9 +22,8 @@ def release_lock(*_):
         pass
     sys.exit(0)
 
-signal.signal(signal.SIGTERM, release_lock)
 signal.signal(signal.SIGINT, release_lock)
-
+signal.signal(signal.SIGTERM, release_lock)
 acquire_lock()
 
 # ================= ENV =================
@@ -34,130 +33,124 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
+
+LEECH_GC_ID = -1001749401484
+LEECH_CMD = "/l1"
+KPS_PM_BOT = "KPSLeech1Bot"
+
 UPLOAD_TAG = "@SenpaiAnimess"
-THUMB_PATH = "/tmp/thumb.jpg"
 QUALITY_ORDER = ["480p", "720p", "1080p", "2160p"]
 
 # ================= APP =================
 app = Client(
-    "anime_qualifier_user",
+    "perfect01_user",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING,
     in_memory=True
 )
 
-EPISODE_QUEUE = []
+# ================= MEMORY =================
+EP_QUEUE = []          # episodes to dispatch
+WAITING = {}           # episode -> qualities received
 
 # ================= UTILS =================
 def is_owner(uid):
     return uid in OWNERS
 
 def extract_files(text):
-    files = []
+    out = []
     for link, name, q in re.findall(
         r"(https://t\.me/\S+)\s+-n\s+(.+?\[(480p|720p|1080p|2160p)\])",
         text
     ):
-        files.append({
+        out.append({
             "link": link,
             "filename": name,
             "quality": q
         })
-    return sorted(files, key=lambda x: QUALITY_ORDER.index(x["quality"]))
+    return sorted(out, key=lambda x: QUALITY_ORDER.index(x["quality"]))
 
-def parse_multi_episode(text):
+def parse_blocks(text):
     episodes = []
     blocks = re.split(r"(?=🎺)", text)
-    for block in blocks:
-        t = re.search(r"🎺\s*(.+)", block)
-        o = re.search(r"Episode\s+(\d+)", block)
-        f = extract_files(block)
+    for b in blocks:
+        t = re.search(r"🎺\s*(.+)", b)
+        o = re.search(r"Episode\s+(\d+)", b)
+        f = extract_files(b)
         if t and o and f:
             episodes.append({
-                "title": f"<b>🎺 {t.group(1)}</b>",
+                "title": t.group(1),
                 "overall": int(o.group(1)),
                 "files": f
             })
     return sorted(episodes, key=lambda x: x["overall"])
 
-def caption(ep, q):
-    return (
-        "<b>⬡ Jujutsu Kaisen</b>\n"
-        "<b>╔══════════════════════╗</b>\n"
-        "<b>‣ Season : 02</b>\n"
-        f"<b>‣ Episode : {ep}</b>\n"
-        "<b>‣ Audio : Hindi #Official</b>\n"
-        f"<b>‣ Quality : {q}</b>\n"
-        "<b>╚══════════════════════╝</b>\n"
-        f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
-    )
-
-# ================= THUMB =================
-@app.on_message(filters.command("set_thumb"))
-async def set_thumb(_, m: Message):
-    if not is_owner(m.from_user.id):
-        return
-    if not m.reply_to_message or not m.reply_to_message.photo:
-        return await m.reply("Reply image ke saath /set_thumb")
-    await app.download_media(m.reply_to_message.photo, THUMB_PATH)
-    await m.reply("✅ Thumbnail saved")
-
 # ================= QUEUE =================
-@app.on_message(filters.text & filters.regex(r"🎺"))
-async def queue(_, m: Message):
+@app.on_message(filters.text & filters.regex("🎺"))
+async def queue_handler(_, m: Message):
     if not is_owner(m.from_user.id):
         return
-    eps = parse_multi_episode(m.text)
+
+    eps = parse_blocks(m.text)
     if not eps:
-        return await m.reply("❌ Invalid format")
+        return await m.reply("❌ Invalid episode format")
+
     for ep in eps:
-        EPISODE_QUEUE.append(ep)
+        EP_QUEUE.append(ep)
+        WAITING[ep["overall"]] = set()
+
         await m.reply(
-            f"<b>📥 Queued → Episode {ep['overall']} ({len(ep['files'])} qualities)</b>",
+            f"<b>📥 Dispatched → Episode {ep['overall']} ({len(ep['files'])} qualities)</b>",
             parse_mode=ParseMode.HTML
         )
 
-# ================= START =================
-@app.on_message(filters.command("start"))
-async def start(client, m: Message):
-    if not is_owner(m.from_user.id):
-        return
-    if not EPISODE_QUEUE:
-        return await m.reply("❌ Queue empty")
-
-    for ep in EPISODE_QUEUE:
-        await m.reply(ep["title"], parse_mode=ParseMode.HTML)
-
+        # 🔥 SEND /l1 COMMANDS TO LEECH GC
         for f in ep["files"]:
-            chat, mid = re.search(r"https://t\.me/([^/]+)/(\d+)", f["link"]).groups()
-            msg = await client.get_messages(chat, int(mid))
+            cmd = f"{LEECH_CMD} {f['link']} -n {f['filename']}"
+            try:
+                await app.send_message(LEECH_GC_ID, cmd)
+                await asyncio.sleep(2)
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
 
-            path = await client.download_media(msg)
+# ================= KPS PM WATCHER =================
+@app.on_message(filters.private & filters.user(KPS_PM_BOT))
+async def kps_watcher(_, m: Message):
+    text = (m.caption or m.text or "")
+    m_ep = re.search(r"Episode\s+\d+\((\d+)\)", text)
+    m_q = re.search(r"\[(480p|720p|1080p|2160p)\]", text)
 
-            while True:
-                try:
-                    await client.send_video(
-                        m.chat.id,
-                        path,
-                        caption=caption(ep["overall"], f["quality"]),
-                        thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                        supports_streaming=True,
-                        parse_mode=ParseMode.HTML
-                    )
-                    break
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 2)
+    if not m_ep or not m_q:
+        return
 
-            os.remove(path)
+    ep = int(m_ep.group(1))
+    q = m_q.group(1)
 
-    EPISODE_QUEUE.clear()
-    await m.reply("<b>✅ All episodes done</b>", parse_mode=ParseMode.HTML)
+    if ep not in WAITING:
+        return
 
-# ================= RUN SAFE =================
+    WAITING[ep].add(q)
+
+    # ✅ ALL 4 QUALITIES RECEIVED
+    if len(WAITING[ep]) == 4:
+        await app.send_message(
+            m.from_user.id,
+            (
+                f"<b>🎺 Episode {ep} – Completed</b>\n\n"
+                f"480p   ✅ Renamed + Captioned + Thumbnail\n"
+                f"720p   ✅ Renamed + Captioned + Thumbnail\n"
+                f"1080p  ✅ Renamed + Captioned + Thumbnail\n"
+                f"2160p  ✅ Renamed + Captioned + Thumbnail"
+            ),
+            parse_mode=ParseMode.HTML
+        )
+        del WAITING[ep]
+
+# ================= RUN =================
 try:
     app.run()
 except AuthKeyDuplicated:
-    print("❌ AUTH_KEY_DUPLICATED — session already running elsewhere")
+    print("AUTH_KEY_DUPLICATED — session already in use")
 finally:
     release_lock()
