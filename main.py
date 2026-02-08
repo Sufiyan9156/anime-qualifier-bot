@@ -1,6 +1,7 @@
 import os, re, time, asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.enums import ParseMode
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -67,7 +68,7 @@ def extract_files(text):
 
     return files
 
-# ================= CAPTION (BOLD – EXACT FORMAT) =================
+# ================= CAPTION (BOLD – LOCKED) =================
 def build_caption(anime, season, ep, overall, quality):
     return (
         f"<b>⬡ {anime}</b>\n"
@@ -103,7 +104,7 @@ async def queue(_, m: Message):
 
     await m.reply(
         f"<b>📥 Queued → Episode {overall.group(1)} ({len(files)} qualities)</b>",
-        parse_mode="html"
+        parse_mode=ParseMode.HTML
     )
 
 # ================= START =================
@@ -113,7 +114,7 @@ async def start(client, m: Message):
         return
 
     for ep in EPISODE_QUEUE:
-        await m.reply(ep["title"], parse_mode="html")
+        await m.reply(ep["title"], parse_mode=ParseMode.HTML)
 
         for item in ep["files"]:
             chat, mid = re.search(
@@ -145,7 +146,7 @@ async def start(client, m: Message):
                 progress=lambda c,t: cb(c,t,"📥 Downloading")
             )
 
-            await asyncio.sleep(2)  # thumb stability
+            await asyncio.sleep(2)
 
             await client.send_video(
                 m.chat.id,
@@ -159,7 +160,7 @@ async def start(client, m: Message):
                 ),
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                 supports_streaming=True,
-                parse_mode="html",
+                parse_mode=ParseMode.HTML,
                 progress=lambda c,t: cb(c,t,"📤 Uploading")
             )
 
@@ -167,6 +168,6 @@ async def start(client, m: Message):
             os.remove(path)
 
     EPISODE_QUEUE.clear()
-    await m.reply("<b>✅ All qualities uploaded</b>", parse_mode="html")
+    await m.reply("<b>✅ All qualities uploaded</b>", parse_mode=ParseMode.HTML)
 
 app.run()
