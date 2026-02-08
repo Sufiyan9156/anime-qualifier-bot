@@ -27,7 +27,7 @@ def is_owner(uid):
 
 def make_bar(p):
     f = int(p // 10)
-    return "▰"*f + "▱"*(10-f)
+    return "▰" * f + "▱" * (10 - f)
 
 def speed_fmt(done, start):
     elapsed = max(1, time.time() - start)
@@ -72,6 +72,7 @@ def extract_files(text):
 
     return files
 
+# ================= CAPTION (LOCKED) =================
 def build_caption(filename, quality, overall):
     anime, season, ep = re.search(
         r"(.+?)\s+Season\s+(\d+)\s+Episode\s+(\d+)",
@@ -79,14 +80,14 @@ def build_caption(filename, quality, overall):
     ).groups()
 
     return (
-        f"<b>⬡ {anime}</b>\n"
-        f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-        f"<b>‣ Season : {season.zfill(2)}</b>\n"
-        f"<b>‣ Episode : {ep.zfill(2)} ({overall})</b>\n"
-        f"<b>‣ Audio : Hindi #Official</b>\n"
-        f"<b>‣ Quality : {quality}</b>\n"
-        f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-        f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
+        f"⬡ {anime}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"‣ Season : {season.zfill(2)}\n"
+        f"‣ Episode : {ep.zfill(2)} ({overall})\n"
+        f"‣ Audio : Hindi #Official\n"
+        f"‣ Quality : {quality}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⬡ Uploaded By : {UPLOAD_TAG}"
     )
 
 # ================= QUEUE =================
@@ -104,14 +105,13 @@ async def queue(_, m: Message):
     files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
 
     EPISODE_QUEUE.append({
-        "title": f"<b>🎺 {t.group(1)}</b>",
+        "title": f"🎺 {t.group(1)}",
         "overall": overall,
         "files": files
     })
 
     await m.reply(
-        f"📥 Queued → Episode {overall} ({len(files)} qualities)",
-        parse_mode=ParseMode.HTML
+        f"📥 Queued → Episode {overall} ({len(files)} qualities)"
     )
 
 # ================= START =================
@@ -121,7 +121,7 @@ async def start_upload(client: Client, m: Message):
         return
 
     for ep in EPISODE_QUEUE:
-        await m.reply(ep["title"], parse_mode=ParseMode.HTML)
+        await m.reply(ep["title"])
 
         for item in ep["files"]:
             chat, mid = re.search(
@@ -167,14 +167,14 @@ async def start_upload(client: Client, m: Message):
                 thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                 supports_streaming=False,
                 progress=lambda c,t: progress_cb(c,t,"📤 Uploading"),
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.DEFAULT
             )
 
             await prog.delete()
             os.remove(path)
 
     EPISODE_QUEUE.clear()
-    await m.reply("✅ <b>All qualities uploaded</b>", parse_mode=ParseMode.HTML)
+    await m.reply("✅ All qualities uploaded")
 
-print("🤖 Anime Qualifier — RAILWAY HARD STABLE BUILD")
+print("🤖 Anime Qualifier — FINAL LOCKED BUILD")
 app.run()
