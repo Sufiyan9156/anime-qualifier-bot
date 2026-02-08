@@ -2,6 +2,7 @@ import os, re, time, asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait, MessageIdInvalid
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -65,39 +66,35 @@ def extract_files(text):
             "quality": m.group(2)
         })
 
-    return files
+    return sorted(files, key=lambda x: QUALITY_ORDER.index(x["quality"]))
 
 # ================= MULTI 🎺 PARSER =================
 def parse_multi_episode(text):
-    blocks = re.split(r"(?=🎺)", text)
     episodes = []
+    blocks = re.split(r"(?=🎺)", text)
 
     for block in blocks:
         block = block.strip()
         if not block.startswith("🎺"):
             continue
 
-        title_m = re.search(r"🎺\s*(.+)", block)
-        overall_m = re.search(r"Episode\s+(\d+)", block)
-
-        if not title_m or not overall_m:
-            continue
-
+        title = re.search(r"🎺\s*(.+)", block)
+        overall = re.search(r"Episode\s+(\d+)", block)
         files = extract_files(block)
-        files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
 
-        if not files:
+        if not title or not overall or not files:
             continue
 
         episodes.append({
-            "title": f"<b>🎺 {title_m.group(1)}</b>",
-            "overall": overall_m.group(1),
+            "title": f"<b>🎺 {title.group(1)}</b>",
+            "overall": int(overall.group(1)),
             "files": files
         })
 
-    return episodes
+    # ✅ SORT EPISODES PROPERLY
+    return sorted(episodes, key=lambda x: x["overall"])
 
-# ================= CAPTION (BOLD – LOCKED) =================
+# ================= CAPTION =================
 def build_caption(anime, season, ep, overall, quality):
     return (
         f"<b>⬡ {anime}</b>\n"
@@ -116,11 +113,11 @@ async def queue(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    episodes = parse_multi_episode(m.text)
-    if not episodes:
-        return await m.reply("❌ No valid episode blocks found")
+    eps = parse_multi_episode(m.text)
+    if not eps:
+        return await m.reply("❌ No valid episodes found")
 
-    for ep in episodes:
+    for ep in eps:
         EPISODE_QUEUE.append(ep)
         await m.reply(
             f"<b>📥 Queued → Episode {ep['overall']} ({len(ep['files'])} qualities)</b>",
@@ -135,61 +132,72 @@ async def start(client, m: Message):
     if not EPISODE_QUEUE:
         return await m.reply("❌ Queue empty")
 
+    # ✅ FINAL SORT SAFETY
+    EPISODE_QUEUE.sort(key=lambda x: x["overall"])
+
     for ep in EPISODE_QUEUE:
         await m.reply(ep["title"], parse_mode=ParseMode.HTML)
 
         for item in ep["files"]:
-            chat, mid = re.search(
-                r"https://t\.me/([^/]+)/(\d+)",
-                item["link"]
-            ).groups()
-
+            chat, mid = re.search(r"https://t\.me/([^/]+)/(\d+)", item["link"]).groups()
             src = await client.get_messages(chat, int(mid))
 
-            prog = await m.reply("📥 Downloading...\n▱▱▱▱▱▱▱▱▱▱ 0%")
+            prog = await m.reply("📥 Downloading...")
             start_t = time.time()
-            last_pct = -1
+            last_edit = 0
 
-            async def upd(stage, c, t):
-                nonlocal last_pct
-                pct = int(c * 100 / t) if t else 0
-                if pct == last_pct:
+            async def safe_edit(text):
+                nonlocal last_edit
+                if time.time() - last_edit < 3:
                     return
-                last_pct = pct
-                await prog.edit(
-                    f"{stage}\n{bar(pct)} {pct}%\n{speed(c, start_t)}"
-                )
+                last_edit = time.time()
+                try:
+                    await prog.edit(text)
+                except (MessageIdInvalid, FloodWait):
+                    pass
 
             def cb(c, t, stage):
-                client.loop.create_task(upd(stage, c, t))
+                pct = int(c * 100 / t) if t else 0
+                client.loop.create_task(
+                    safe_edit(f"{stage}\n{bar(pct)} {pct}%\n{speed(c, start_t)}")
+                )
 
             path = await client.download_media(
                 src,
                 progress=lambda c, t: cb(c, t, "📥 Downloading")
             )
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
 
-            await client.send_video(
-                m.chat.id,
-                path,
-                caption=build_caption(
-                    "Jujutsu Kaisen",
-                    "02",
-                    re.search(r"Episode\s+(\d+)", item["filename"]).group(1),
-                    ep["overall"],
-                    item["quality"]
-                ),
-                thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                supports_streaming=True,
-                parse_mode=ParseMode.HTML,
-                progress=lambda c, t: cb(c, t, "📤 Uploading")
-            )
+            while True:
+                try:
+                    await client.send_video(
+                        m.chat.id,
+                        path,
+                        caption=build_caption(
+                            "Jujutsu Kaisen",
+                            "02",
+                            re.search(r"Episode\s+(\d+)", item["filename"]).group(1),
+                            ep["overall"],
+                            item["quality"]
+                        ),
+                        thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                        supports_streaming=True,
+                        parse_mode=ParseMode.HTML,
+                        progress=lambda c, t: cb(c, t, "📤 Uploading")
+                    )
+                    break
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 2)
 
-            await prog.delete()
+            try:
+                await prog.delete()
+            except:
+                pass
+
             os.remove(path)
 
     EPISODE_QUEUE.clear()
-    await m.reply("<b>✅ All episodes & qualities uploaded</b>", parse_mode=ParseMode.HTML)
+    await m.reply("<b>✅ All episodes uploaded successfully</b>", parse_mode=ParseMode.HTML)
 
 app.run()
