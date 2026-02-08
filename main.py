@@ -1,6 +1,4 @@
-import os
-import re
-import asyncio
+import os, re, time, asyncio
 from collections import defaultdict
 
 from pyrogram import Client, filters
@@ -16,151 +14,134 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 # ================= CONFIG =================
 OWNERS = {709844068, 6593273878}
 
-LEECH_GROUP = "TorrentLeechGroup"     # without @
-LEECH_BOT = "KPSLeech1Bot"
+LEECH_BOT = "KPSLeech1Bot"   # only l1
+UPLOAD_TAG = "@SenpaiAnimess"
+THUMB_PATH = "/tmp/thumb.jpg"
 
 QUALITY_ORDER = ["480p", "720p", "1080p", "2160p"]
-UPLOAD_TAG = "@SenpaiAnimess"
 
-# ================= CLIENT =================
 app = Client(
-    "qualifier_user",
+    "anime_qualifier_user",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING
 )
 
 # ================= MEMORY =================
-# episode_no -> { title, qualities{q: False} }
-EPISODES = {}
-# episode_no -> received qualities set
-RECEIVED = defaultdict(set)
+EPISODE_META = {}   # episode -> title
+EPISODE_TRACK = defaultdict(dict)  # episode -> {quality: True}
 
 # ================= UTILS =================
 def is_owner(uid):
     return uid in OWNERS
 
-def extract_quality(name):
-    for q in QUALITY_ORDER:
-        if q in name:
-            return q
-    return None
+# ================= THUMB =================
+@app.on_message(filters.command("set_thumb"))
+async def set_thumb(_, m: Message):
+    if not is_owner(m.from_user.id):
+        return
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        return await m.reply("Reply image ke saath /set_thumb")
+
+    await app.download_media(m.reply_to_message.photo, THUMB_PATH)
+    await m.reply("✅ Thumbnail saved (KPS ke liye ready)")
 
 # ================= PARSER =================
-def parse_bulk(text):
+def parse_blocks(text):
     blocks = re.split(r"(?=🎺)", text)
-    parsed = []
+    result = []
 
-    for block in blocks:
-        block = block.strip()
-        if not block.startswith("🎺"):
+    for b in blocks:
+        b = b.strip()
+        if not b.startswith("🎺"):
             continue
 
-        title_m = re.search(r"🎺\s*(.+)", block)
-        ep_m = re.search(r"Episode\s+(\d+)", block)
+        title_m = re.search(r"🎺\s*(.+)", b)
+        ep_m = re.search(r"Episode\s+\d+\((\d+)\)", b)
+
         if not title_m or not ep_m:
             continue
 
-        episode_no = int(ep_m.group(1))
-        title = title_m.group(1)
+        episode = int(ep_m.group(1))
+        result.append((episode, title_m.group(1), b))
 
-        links = re.findall(
-            r"(https://t\.me/\S+)\s+-n\s+(.+?\[(480p|720p|1080p|2160p)\])",
-            block
-        )
+    return result
 
-        files = []
-        for link, fname, q in links:
-            files.append({
-                "link": link,
-                "filename": fname,
-                "quality": q
-            })
+def extract_links(block):
+    links = []
+    for m in re.finditer(r"(https://t\.me/\S+).*?\[(480p|720p|1080p|2160p)\]", block):
+        links.append((m.group(1), m.group(2)))
+    return links
 
-        files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
-
-        parsed.append({
-            "episode": episode_no,
-            "title": title,
-            "files": files
-        })
-
-    return sorted(parsed, key=lambda x: x["episode"])
-
-# ================= QUEUE HANDLER =================
+# ================= QUEUE → DISPATCH =================
 @app.on_message(filters.text & filters.regex(r"🎺"))
-async def handle_bulk(_, m: Message):
+async def dispatch(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    episodes = parse_bulk(m.text)
-    if not episodes:
-        return await m.reply("❌ No valid episodes found")
+    blocks = parse_blocks(m.text)
+    if not blocks:
+        return await m.reply("❌ No valid episode blocks")
 
-    for ep in episodes:
-        ep_no = ep["episode"]
+    for episode, title, block in blocks:
+        EPISODE_META[episode] = title
+        links = extract_links(block)
 
-        if ep_no not in EPISODES:
-            EPISODES[ep_no] = {
-                "title": ep["title"],
-                "qualities": {q["quality"]: False for q in ep["files"]}
-            }
-
-        for item in ep["files"]:
-            cmd = f"/l1 {item['link']} -n {item['filename']} {UPLOAD_TAG}"
-
-            try:
-                await app.send_message(
-                    LEECH_GROUP,
-                    cmd
-                )
-                await asyncio.sleep(2)
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 1)
+        for link, q in links:
+            cmd = f"/l1 {link} -n {title} [{q}] {UPLOAD_TAG}"
+            await app.send_message(LEECH_BOT, cmd)
+            await asyncio.sleep(1.5)
 
         await m.reply(
-            f"<b>📤 Dispatched → Episode {ep_no} ({len(ep['files'])} qualities)</b>",
+            f"<b>📤 Dispatched → Episode {episode} ({len(links)} qualities)</b>",
             parse_mode=ParseMode.HTML
         )
 
-# ================= FILE LISTENER =================
-@app.on_message(filters.private & filters.video)
-async def receive_file(_, m: Message):
+# ================= KPS PM LISTENER =================
+@app.on_message(
+    (filters.private) &
+    (filters.video | filters.document)
+)
+async def kps_listener(_, m: Message):
     if not m.from_user:
         return
-    if m.from_user.username != LEECH_BOT:
+    if m.from_user.username != LEECH_BOT.lower():
         return
 
-    name = m.video.file_name or ""
-    ep_m = re.search(r"Episode\s+(\d+)", name)
-    if not ep_m:
+    text = (m.caption or "") + " " + (m.document.file_name if m.document else "")
+    ep_m = re.search(r"\((\d{3})\)", text)
+    q_m = re.search(r"(480p|720p|1080p|2160p)", text)
+
+    if not ep_m or not q_m:
         return
 
-    ep_no = int(ep_m.group(1))
-    quality = extract_quality(name)
-    if not quality:
+    episode = int(ep_m.group(1))
+    quality = q_m.group(1)
+
+    EPISODE_TRACK[episode][quality] = True
+
+    # ✅ check completion
+    done = all(q in EPISODE_TRACK[episode] for q in QUALITY_ORDER)
+    if not done:
         return
 
-    if ep_no not in EPISODES:
-        return
+    # ================= FINAL STATUS MESSAGE =================
+    title = EPISODE_META.get(episode, f"Episode {episode}")
 
-    RECEIVED[ep_no].add(quality)
+    msg = f"<b>🎺 {title}</b>\n"
+    for q in QUALITY_ORDER:
+        msg += f"{q} (With Renaming, Captioning & Thumbnail Applied)\n"
 
-    # check completion
-    expected = set(EPISODES[ep_no]["qualities"].keys())
-    if RECEIVED[ep_no] == expected:
-        lines = [
-            f"<b>🎺 Episode {ep_no} – {EPISODES[ep_no]['title']}</b>",
-            ""
-        ]
-        for q in QUALITY_ORDER:
-            lines.append(f"<b>{q} ✅ Renamed + Captioned + Thumbnail Applied</b>")
+    await app.send_message(
+        "me",
+        msg,
+        parse_mode=ParseMode.HTML
+    )
 
-        await m.reply(
-            "\n".join(lines),
-            parse_mode=ParseMode.HTML
-        )
+    # cleanup
+    EPISODE_TRACK.pop(episode, None)
+    EPISODE_META.pop(episode, None)
 
-# ================= START =================
-print("🤖 QUALIFIER BOT — PERFECT 01 (LEECH MODE)")
+# ================= RUN =================
+print("🤖 Perfect 01 – Leech Edition Running")
 app.run()
