@@ -5,7 +5,7 @@ import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait, MessageIdInvalid
+from pyrogram.errors import FloodWait, MessageIdInvalid, AuthKeyDuplicated
 
 # ================= ENV =================
 API_ID = int(os.environ["API_ID"])
@@ -20,22 +20,26 @@ QUALITY_ORDER = ["480p", "720p", "1080p", "2160p"]
 
 # ================= APP =================
 app = Client(
-    "anime_qualifier_user",
+    name="anime_qualifier_runtime",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING,
-    in_memory=True
+    in_memory=True,          # 🔥 prevents session file duplication
+    workers=1                # 🔥 avoids parallel auth crash
 )
+
+EPISODE_QUEUE = []
+RUNNING = False
 
 # ================= UTILS =================
 def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
-def z2(n: int) -> str:
-    return f"{n:02d}"
+def pad2(n: int) -> str:
+    return str(n).zfill(2)
 
-def z3(n: int) -> str:
-    return f"{n:03d}"
+def pad3(n: int) -> str:
+    return str(n).zfill(3)
 
 def bar(p: int) -> str:
     f = p // 10
@@ -43,151 +47,171 @@ def bar(p: int) -> str:
 
 def speed(done: int, start: float) -> str:
     t = max(1, time.time() - start)
-    return f"{done / t / (1024 * 1024):.2f} MB/s"
+    return f"{done / t / (1024*1024):.2f} MB/s"
 
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb"))
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
+
     if not m.reply_to_message or not m.reply_to_message.photo:
-        return await m.reply("Reply image ke saath /set_thumb")
+        return await m.reply("❌ Photo reply karke /set_thumb bhejo")
+
     await app.download_media(m.reply_to_message.photo, THUMB_PATH)
     await m.reply("✅ Thumbnail set")
 
-# ================= PARSER (LENIENT) =================
-def parse_message(text: str):
-    episodes = []
-    blocks = re.split(r"🎺", text)
+# ================= FILE PARSER =================
+def extract_files(text: str):
+    files = []
+    parts = re.split(r"(https://t\.me/\S+)", text)
 
-    for block in blocks:
-        block = block.strip()
-        if not block:
+    for i in range(1, len(parts), 2):
+        link = parts[i]
+        tail = parts[i+1] if i+1 < len(parts) else ""
+
+        m = re.search(r"-n\s+(.+?\[(480p|720p|1080p|2160p)\])", tail)
+        if not m:
             continue
 
-        title_m = re.search(r"Episode\s+(\d+)\s*-\s*(.+)", block)
-        if not title_m:
+        files.append({
+            "link": link,
+            "filename": m.group(1),
+            "quality": m.group(2)
+        })
+
+    return sorted(files, key=lambda x: QUALITY_ORDER.index(x["quality"]))
+
+# ================= MULTI EP PARSER =================
+def parse_multi_episode(text: str):
+    eps = []
+    blocks = re.split(r"(?=🎺)", text)
+
+    for b in blocks:
+        b = b.strip()
+        if not b.startswith("🎺"):
             continue
 
-        overall = int(title_m.group(1))
-        title = title_m.group(2).strip()
+        title = re.search(r"🎺\s*(.+)", b)
+        overall = re.search(r"Episode\s+(\d+)", b)
+        files = extract_files(b)
 
-        files = []
-        for link, name, q in re.findall(
-            r"(https://t\.me/\S+)\s+-n\s+(.+?)\s+\[(480p|720p|1080p|2160p)\]",
-            block,
-            flags=re.I
-        ):
-            files.append({
-                "link": link,
-                "name": name,
-                "quality": q
-            })
+        if not title or not overall or not files:
+            continue
 
-        files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
+        eps.append({
+            "title": title.group(1),
+            "overall": int(overall.group(1)),
+            "files": files
+        })
 
-        if files:
-            episodes.append({
-                "overall": overall,
-                "title": title,
-                "files": files
-            })
-
-    return episodes
+    return sorted(eps, key=lambda x: x["overall"])
 
 # ================= CAPTION =================
-def caption(anime, season, ep, overall, quality):
+def build_caption(anime, season, ep, overall, quality):
     return (
         f"<b>⬡ {anime}</b>\n"
         f"<b>╔══════════════════════╗</b>\n"
-        f"<b>‣ Season : {z2(season)}</b>\n"
-        f"<b>‣ Episode : {z2(ep)} ({z3(overall)})</b>\n"
+        f"<b>‣ Season : {pad2(season)}</b>\n"
+        f"<b>‣ Episode : {pad2(ep)} ({pad3(overall)})</b>\n"
         f"<b>‣ Audio : Hindi #Official</b>\n"
         f"<b>‣ Quality : {quality}</b>\n"
         f"<b>╚══════════════════════╝</b>\n"
         f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
     )
 
-# ================= HANDLER =================
-@app.on_message((filters.text | filters.caption) & filters.regex("🎺"))
-async def handle(_, m: Message):
+# ================= QUEUE =================
+@app.on_message((filters.text | filters.caption) & filters.regex(r"🎺"))
+async def queue(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
     text = m.text or m.caption
-    episodes = parse_message(text)
+    eps = parse_multi_episode(text)
 
-    if not episodes:
-        return await m.reply("❌ No valid episode found")
+    if not eps:
+        return await m.reply("❌ Valid episode data nahi mila")
 
-    for ep in episodes:
-        # 🔹 Title ONCE
+    for ep in eps:
+        EPISODE_QUEUE.append(ep)
         await m.reply(
-            f"<b>🎺 Episode {z3(ep['overall'])} – {ep['title']}</b>",
+            f"📥 Queued → Episode {pad3(ep['overall'])} ({len(ep['files'])} qualities)",
             parse_mode=ParseMode.HTML
         )
 
-        for f in ep["files"]:
-            chat, mid = re.search(
-                r"https://t\.me/([^/]+)/(\d+)",
-                f["link"]
-            ).groups()
+# ================= START =================
+@app.on_message(filters.command("start"))
+async def start(client: Client, m: Message):
+    global RUNNING
+    if not is_owner(m.from_user.id):
+        return
 
-            src = await app.get_messages(chat, int(mid))
-            prog = await m.reply("📥 Downloading...")
-            start_t = time.time()
-            last_edit = 0
+    if RUNNING:
+        return await m.reply("⚠️ Already running")
 
-            async def safe_edit(t):
-                nonlocal last_edit
-                if time.time() - last_edit < 3:
-                    return
-                last_edit = time.time()
-                try:
-                    await prog.edit(t)
-                except:
-                    pass
+    if not EPISODE_QUEUE:
+        return await m.reply("❌ Queue empty")
 
-            def cb(c, t, stage):
-                p = int(c * 100 / t) if t else 0
-                app.loop.create_task(
-                    safe_edit(f"{stage}\n{bar(p)} {p}%\n{speed(c, start_t)}")
+    RUNNING = True
+    EPISODE_QUEUE.sort(key=lambda x: x["overall"])
+
+    try:
+        for ep in EPISODE_QUEUE:
+            await m.reply(f"<b>🎺 Episode {pad3(ep['overall'])} - {ep['title']}</b>", parse_mode=ParseMode.HTML)
+
+            for item in ep["files"]:
+                chat, mid = re.search(r"https://t\.me/([^/]+)/(\d+)", item["link"]).groups()
+                src = await client.get_messages(chat, int(mid))
+
+                prog = await m.reply("📥 Downloading...")
+                start_t = time.time()
+                last = 0
+
+                async def safe_edit(txt):
+                    nonlocal last
+                    if time.time() - last < 3:
+                        return
+                    last = time.time()
+                    try:
+                        await prog.edit(txt)
+                    except:
+                        pass
+
+                def cb(c, t, stage):
+                    pct = int(c*100/t) if t else 0
+                    client.loop.create_task(
+                        safe_edit(f"{stage}\n{bar(pct)} {pct}%\n{speed(c,start_t)}")
+                    )
+
+                path = await client.download_media(src, progress=lambda c,t: cb(c,t,"📥 Downloading"))
+                await asyncio.sleep(2)
+
+                await client.send_video(
+                    m.chat.id,
+                    path,
+                    caption=build_caption(
+                        "Jujutsu Kaisen",
+                        1,
+                        int(re.search(r"Episode\s+(\d+)", item["filename"]).group(1)),
+                        ep["overall"],
+                        item["quality"]
+                    ),
+                    thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+                    supports_streaming=True,
+                    parse_mode=ParseMode.HTML,
+                    progress=lambda c,t: cb(c,t,"📤 Uploading")
                 )
 
-            path = await app.download_media(
-                src,
-                progress=lambda c, t: cb(c, t, "📥 Downloading")
-            )
-
-            while True:
-                try:
-                    await app.send_video(
-                        m.chat.id,
-                        path,
-                        caption=caption(
-                            "Jujutsu Kaisen",
-                            1,
-                            ep["overall"],
-                            ep["overall"],
-                            f["quality"]
-                        ),
-                        thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
-                        supports_streaming=True,
-                        parse_mode=ParseMode.HTML,
-                        progress=lambda c, t: cb(c, t, "📤 Uploading")
-                    )
-                    break
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 2)
-
-            try:
                 await prog.delete()
-            except:
-                pass
+                os.remove(path)
 
-            os.remove(path)
+        await m.reply("✅ All episodes uploaded successfully")
 
-    await m.reply("<b>✅ All uploads completed</b>", parse_mode=ParseMode.HTML)
+    except AuthKeyDuplicated:
+        await m.reply("❌ SESSION DUPLICATED\n\nSame account kahin aur login hai.\nMobile / other server logout karo.")
+    finally:
+        EPISODE_QUEUE.clear()
+        RUNNING = False
 
 # ================= RUN =================
 app.run()
