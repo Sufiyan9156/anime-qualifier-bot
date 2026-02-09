@@ -1,128 +1,86 @@
-import os, re, asyncio, time, sys, signal
+# Perfect 01 – Final Stable Edition (PM-based Leech Pickup)
+
+import os, re, asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
-from pyrogram.errors.exceptions.not_acceptable_406 import AuthKeyDuplicated
 
-# ================== HARD LOCK ==================
-LOCK = "/tmp/aq.lock"
-
-def lock():
-    if os.path.exists(LOCK):
-        print("Already running, exit.")
-        sys.exit(0)
-    open(LOCK, "w").write(str(os.getpid()))
-
-def unlock(*_):
-    try: os.remove(LOCK)
-    except: pass
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, unlock)
-signal.signal(signal.SIGTERM, unlock)
-lock()
-
-# ================== ENV ==================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
 
-# ================== CONFIG ==================
-OWNERS = {709844068, 6593273878}
-LEECH_BOT = "KPSLeech1Bot"
+OWNERS = {709844068}
 UPLOAD_TAG = "@SenpaiAnimess"
-THUMB = "/tmp/thumb.jpg"
-QUALITY_ORDER = ["480p", "720p", "1080p", "2160p"]
+THUMB_PATH = "/tmp/thumb.jpg"
 
-# ================== APP ==================
 app = Client(
-    "anime_qualifier_user",
+    "qualifier_user",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING,
     in_memory=True
 )
 
-QUEUE = []
+EP_QUEUE = {}
 
-# ================== UTILS ==================
-def owner(uid): return uid in OWNERS
+def is_owner(uid): return uid in OWNERS
 
-def parse_blocks(text):
-    eps = []
-    blocks = re.split(r"(?=🎺)", text)
-    for b in blocks:
-        t = re.search(r"🎺\s*(.+)", b)
-        o = re.search(r"Episode\s+(\d+)", b)
-        files = re.findall(
-            r"(https://t\.me/\S+)\s+-n\s+(.+?\[(480p|720p|1080p|2160p)\])",
-            b
-        )
-        if not (t and o and files): continue
-        eps.append({
-            "title": t.group(1),
-            "overall": int(o.group(1)),
-            "files": sorted(
-                [{"link": l, "name": n, "q": q} for l,n,q in files],
-                key=lambda x: QUALITY_ORDER.index(x["q"])
-            )
-        })
-    return sorted(eps, key=lambda x: x["overall"])
+def caption(ep, q):
+    return (
+        "<b>⬡ Jujutsu Kaisen</b>\n"
+        "<b>╔══════════════════════╗</b>\n"
+        "<b>‣ Season : 02</b>\n"
+        f"<b>‣ Episode : {ep}</b>\n"
+        "<b>‣ Audio : Hindi #Official</b>\n"
+        f"<b>‣ Quality : {q}</b>\n"
+        "<b>╚══════════════════════╝</b>\n"
+        f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
+    )
 
-def summary(ep):
-    lines = [f"<b>🎺 {ep['title']}</b>"]
-    for f in ep["files"]:
-        lines.append(f"{f['q']} (Renamed + Caption + Thumb ✅)")
-    return "\n".join(lines)
-
-# ================== THUMB ==================
 @app.on_message(filters.command("set_thumb"))
 async def set_thumb(_, m: Message):
-    if not owner(m.from_user.id): return
+    if not is_owner(m.from_user.id): return
     if not m.reply_to_message or not m.reply_to_message.photo:
         return await m.reply("Reply image ke saath /set_thumb")
-    await app.download_media(m.reply_to_message.photo, THUMB)
+    await app.download_media(m.reply_to_message.photo, THUMB_PATH)
     await m.reply("✅ Thumbnail saved")
 
-# ================== QUEUE ==================
-@app.on_message(filters.text & filters.regex("🎺"))
-async def queue(_, m: Message):
-    if not owner(m.from_user.id): return
-    eps = parse_blocks(m.text)
-    if not eps:
-        return await m.reply("❌ Format invalid")
-    for e in eps:
-        QUEUE.append(e)
+@app.on_message(filters.text & filters.regex(r"🎺"))
+async def parse_episode(_, m: Message):
+    if not is_owner(m.from_user.id): return
+
+    blocks = re.split(r"(?=🎺)", m.text)
+    for b in blocks:
+        t = re.search(r"🎺\s*(.+)", b)
+        e = re.search(r"Episode\s+(\d+)", b)
+        if not t or not e: continue
+
+        ep = e.group(1)
+        EP_QUEUE[ep] = {"title": t.group(1), "files": []}
+
         await m.reply(
-            f"<b>📥 Queued → Episode {e['overall']} ({len(e['files'])} qualities)</b>",
+            f"<b>📥 Episode {ep} queued.\nSend /l1 commands manually in leech GC.</b>",
             parse_mode=ParseMode.HTML
         )
 
-# ================== START ==================
-@app.on_message(filters.command("start"))
-async def start(client, m: Message):
-    if not owner(m.from_user.id): return
-    if not QUEUE:
-        return await m.reply("❌ Queue empty")
+@app.on_message(filters.private & filters.video)
+async def pickup(_, m: Message):
+    name = m.video.file_name or ""
+    ep = re.search(r"\((\d+)\)", name)
+    q = re.search(r"(480p|720p|1080p|2160p)", name)
+    if not ep or not q: return
 
-    for ep in QUEUE:
-        # 1️⃣ SEND TASKS TO LEECH BOT PM
-        for f in ep["files"]:
-            cmd = f"/l1 {f['link']} -n {f['name']} {UPLOAD_TAG}"
-            await client.send_message(LEECH_BOT, cmd)
-            await asyncio.sleep(2)  # human-like
+    ep = ep.group(1)
+    q = q.group(1)
 
-        # 2️⃣ SUMMARY BACK TO QUALIFIER PM
-        await m.reply(summary(ep), parse_mode=ParseMode.HTML)
+    await app.send_video(
+        OWNERS.pop(),
+        m.video.file_id,
+        caption=caption(ep, q),
+        thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
+        parse_mode=ParseMode.HTML,
+        supports_streaming=True
+    )
 
-    QUEUE.clear()
-    await m.reply("<b>✅ All episodes dispatched successfully</b>", parse_mode=ParseMode.HTML)
-
-# ================== RUN ==================
-try:
-    app.run()
-except AuthKeyDuplicated:
-    print("AUTH_KEY_DUPLICATED – same session elsewhere")
-finally:
-    unlock()
+app.run()
