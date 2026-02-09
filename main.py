@@ -92,16 +92,21 @@ def parse_multi_episode(text: str):
         if not b.startswith("🎺"):
             continue
 
-        title = re.search(r"🎺\s*(.+)", b)
-        overall = re.search(r"Episode\s+(\d+)", b)
+        title_m = re.search(r"🎺\s*(.+)", b)
+        overall_m = re.search(r"Episode\s+(\d+)", b)
         files = extract_files(b)
 
-        if not title or not overall or not files:
+        if not title_m or not overall_m or not files:
             continue
 
+        raw_title = title_m.group(1)
+
+        # 🔥 FIX: remove "Episode 001 - " from title
+        clean_title = re.sub(r"^Episode\s+\d+\s*-\s*", "", raw_title).strip()
+
         eps.append({
-            "title": title.group(1),
-            "overall": int(overall.group(1)),
+            "title": clean_title,              # ✅ only "Ryomen Sukuna"
+            "overall": int(overall_m.group(1)),
             "files": files
         })
 
