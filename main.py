@@ -25,7 +25,7 @@ app = Client(
 EPISODE_QUEUE = []
 
 # ================= UTILS =================
-def is_owner(uid: int) -> bool:
+def is_owner(uid):
     return uid in OWNERS
 
 def bar(p):
@@ -34,7 +34,7 @@ def bar(p):
 
 def speed(done, start):
     t = max(1, time.time() - start)
-    return f"{done / t / (1024 * 1024):.2f} MB/s"
+    return f"{done / t / (1024*1024):.2f} MB/s"
 
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb"))
@@ -48,7 +48,7 @@ async def set_thumb(_, m: Message):
     await m.reply("✅ Thumbnail saved")
 
 # ================= FILE PARSER =================
-def extract_files(text: str):
+def extract_files(text):
     files = []
     parts = re.split(r"(https://t\.me/\S+)", text)
 
@@ -56,10 +56,7 @@ def extract_files(text: str):
         link = parts[i]
         tail = parts[i + 1] if i + 1 < len(parts) else ""
 
-        m = re.search(
-            r"-n\s+(.+?\[(480p|720p|1080p|2160p)\])",
-            tail
-        )
+        m = re.search(r"-n\s+(.+?\[(480p|720p|1080p|2160p)\])", tail)
         if not m:
             continue
 
@@ -72,7 +69,7 @@ def extract_files(text: str):
     return sorted(files, key=lambda x: QUALITY_ORDER.index(x["quality"]))
 
 # ================= MULTI 🎺 PARSER =================
-def parse_multi_episode(text: str):
+def parse_multi_episode(text):
     episodes = []
     blocks = re.split(r"(?=🎺)", text)
 
@@ -81,19 +78,20 @@ def parse_multi_episode(text: str):
         if not block.startswith("🎺"):
             continue
 
-        title_m = re.search(r"🎺\s*(.+)", block)
-        overall_m = re.search(r"Episode\s+(\d+)", block)
+        title = re.search(r"🎺\s*(.+)", block)
+        overall = re.search(r"Episode\s+(\d+)", block)
         files = extract_files(block)
 
-        if not title_m or not overall_m or not files:
+        if not title or not overall or not files:
             continue
 
         episodes.append({
-            "title": f"<b>🎺 {title_m.group(1)}</b>",
-            "overall": int(overall_m.group(1)),
+            "title": f"<b>🎺 {title.group(1)}</b>",
+            "overall": int(overall.group(1)),
             "files": files
         })
 
+    # ✅ SORT EPISODES PROPERLY
     return sorted(episodes, key=lambda x: x["overall"])
 
 # ================= CAPTION =================
@@ -109,19 +107,17 @@ def build_caption(anime, season, ep, overall, quality):
         f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
     )
 
-# ================= QUEUE (TEXT + CAPTION SAFE) =================
-@app.on_message((filters.text | filters.caption) & filters.regex(r"🎺"))
+# ================= QUEUE =================
+@app.on_message(filters.text & filters.regex(r"🎺"))
 async def queue(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    text = m.text or m.caption
-    episodes = parse_multi_episode(text)
-
-    if not episodes:
+    eps = parse_multi_episode(m.text)
+    if not eps:
         return await m.reply("❌ No valid episodes found")
 
-    for ep in episodes:
+    for ep in eps:
         EPISODE_QUEUE.append(ep)
         await m.reply(
             f"<b>📥 Queued → Episode {ep['overall']} ({len(ep['files'])} qualities)</b>",
@@ -136,18 +132,16 @@ async def start(client, m: Message):
     if not EPISODE_QUEUE:
         return await m.reply("❌ Queue empty")
 
+    # ✅ FINAL SORT SAFETY
     EPISODE_QUEUE.sort(key=lambda x: x["overall"])
 
-for ep in EPISODE_QUEUE:
+    for ep in EPISODE_QUEUE:
         await m.reply(ep["title"], parse_mode=ParseMode.HTML)
 
-        for item in ep["files"]:
-            chat, mid = re.search(
-                r"https://t\.me/([^/]+)/(\d+)",
-                item["link"]
-            ).groups()
-
+for item in ep["files"]:
+            chat, mid = re.search(r"https://t\.me/([^/]+)/(\d+)", item["link"]).groups()
             src = await client.get_messages(chat, int(mid))
+
             prog = await m.reply("📥 Downloading...")
             start_t = time.time()
             last_edit = 0
@@ -204,9 +198,6 @@ for ep in EPISODE_QUEUE:
             os.remove(path)
 
     EPISODE_QUEUE.clear()
-    await m.reply(
-        "<b>✅ All episodes & qualities uploaded successfully</b>",
-        parse_mode=ParseMode.HTML
-    )
+    await m.reply("<b>✅ All episodes uploaded successfully</b>", parse_mode=ParseMode.HTML)
 
 app.run()
