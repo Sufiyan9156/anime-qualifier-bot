@@ -1,4 +1,7 @@
-import os, re, time, asyncio
+import os
+import re
+import time
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
@@ -15,6 +18,7 @@ UPLOAD_TAG = "@SenpaiAnimess"
 THUMB_PATH = "/tmp/thumb.jpg"
 QUALITY_ORDER = ["480p", "720p", "1080p", "2160p"]
 
+# ================= APP =================
 app = Client(
     "anime_qualifier_user",
     api_id=API_ID,
@@ -23,19 +27,23 @@ app = Client(
     in_memory=True
 )
 
-EPISODE_QUEUE = []
-
 # ================= UTILS =================
-def is_owner(uid): 
+def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
-def bar(p):
-    f = p // 10
-    return "▰"*f + "▱"*(10-f)
+def z2(n: int) -> str:
+    return f"{n:02d}"
 
-def speed(done, start):
+def z3(n: int) -> str:
+    return f"{n:03d}"
+
+def bar(p: int) -> str:
+    f = p // 10
+    return "▰" * f + "▱" * (10 - f)
+
+def speed(done: int, start: float) -> str:
     t = max(1, time.time() - start)
-    return f"{done/t/(1024*1024):.2f} MB/s"
+    return f"{done / t / (1024 * 1024):.2f} MB/s"
 
 # ================= THUMB =================
 @app.on_message(filters.command("set_thumb"))
@@ -43,132 +51,143 @@ async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
     if not m.reply_to_message or not m.reply_to_message.photo:
-        return await m.reply("Reply photo ke saath /set_thumb")
-
+        return await m.reply("Reply image ke saath /set_thumb")
     await app.download_media(m.reply_to_message.photo, THUMB_PATH)
-    await m.reply("✅ Thumbnail saved")
+    await m.reply("✅ Thumbnail set")
 
-# ================= PARSER =================
-def extract_files(text):
-    files = []
-    parts = re.split(r"(https://t\.me/\S+)", text)
+# ================= PARSER (LENIENT) =================
+def parse_message(text: str):
+    episodes = []
+    blocks = re.split(r"🎺", text)
 
-    for i in range(1, len(parts), 2):
-        link = parts[i]
-        tail = parts[i+1] if i+1 < len(parts) else ""
-        m = re.search(r"-n\s+(.+?\[(480p|720p|1080p|2160p)\])", tail)
-        if m:
-            files.append({
-                "link": link,
-                "filename": m.group(1),
-                "quality": m.group(2)
-            })
-
-    return sorted(files, key=lambda x: QUALITY_ORDER.index(x["quality"]))
-
-def parse_multi_episode(text):
-    eps = []
-    blocks = re.split(r"(?=🎺)", text)
-
-    for b in blocks:
-        if not b.startswith("🎺"):
+    for block in blocks:
+        block = block.strip()
+        if not block:
             continue
 
-        title = re.search(r"🎺\s*(.+)", b)
-        num = re.search(r"Episode\s+(\d+)", b)
-        files = extract_files(b)
+        title_m = re.search(r"Episode\s+(\d+)\s*-\s*(.+)", block)
+        if not title_m:
+            continue
 
-        if title and num and files:
-            eps.append({
-                "title": title.group(1),
-                "num": int(num.group(1)),
+        overall = int(title_m.group(1))
+        title = title_m.group(2).strip()
+
+        files = []
+        for link, name, q in re.findall(
+            r"(https://t\.me/\S+)\s+-n\s+(.+?)\s+\[(480p|720p|1080p|2160p)\]",
+            block,
+            flags=re.I
+        ):
+            files.append({
+                "link": link,
+                "name": name,
+                "quality": q
+            })
+
+        files.sort(key=lambda x: QUALITY_ORDER.index(x["quality"]))
+
+        if files:
+            episodes.append({
+                "overall": overall,
+                "title": title,
                 "files": files
             })
 
-    return sorted(eps, key=lambda x: x["num"])
+    return episodes
 
 # ================= CAPTION =================
-def caption(ep_no, quality):
-    ep2 = f"{ep_no:02d}"
-    ep3 = f"{ep_no:03d}"
+def caption(anime, season, ep, overall, quality):
     return (
-        "<b>⬡ Jujutsu Kaisen</b>\n"
-        "<b>╔══════════════════════╗</b>\n"
-        "<b>‣ Season : 01</b>\n"
-        f"<b>‣ Episode : {ep2} ({ep3})</b>\n"
-        "<b>‣ Audio : Hindi #Official</b>\n"
+        f"<b>⬡ {anime}</b>\n"
+        f"<b>╔══════════════════════╗</b>\n"
+        f"<b>‣ Season : {z2(season)}</b>\n"
+        f"<b>‣ Episode : {z2(ep)} ({z3(overall)})</b>\n"
+        f"<b>‣ Audio : Hindi #Official</b>\n"
         f"<b>‣ Quality : {quality}</b>\n"
-        "<b>╚══════════════════════╝</b>\n"
+        f"<b>╚══════════════════════╝</b>\n"
         f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
     )
 
-# ================= QUEUE =================
+# ================= HANDLER =================
 @app.on_message((filters.text | filters.caption) & filters.regex("🎺"))
-async def queue(_, m: Message):
+async def handle(_, m: Message):
     if not is_owner(m.from_user.id):
         return
 
-    eps = parse_multi_episode(m.text or m.caption)
-    if not eps:
-        return await m.reply("❌ Invalid format")
+    text = m.text or m.caption
+    episodes = parse_message(text)
 
-    EPISODE_QUEUE.extend(eps)
-    await m.reply(f"📥 Queued {len(eps)} episode(s)")
+    if not episodes:
+        return await m.reply("❌ No valid episode found")
 
-# ================= START =================
-@app.on_message(filters.command("start"))
-async def start(client, m: Message):
-    if not is_owner(m.from_user.id):
-        return
-    if not EPISODE_QUEUE:
-        return await m.reply("❌ Queue empty")
+    for ep in episodes:
+        # 🔹 Title ONCE
+        await m.reply(
+            f"<b>🎺 Episode {z3(ep['overall'])} – {ep['title']}</b>",
+            parse_mode=ParseMode.HTML
+        )
 
-    for ep in EPISODE_QUEUE:
-        ep3 = f"{ep['num']:03d}"
-        await m.reply(f"<b>🎺 Episode {ep3} – {ep['title']}</b>", parse_mode=ParseMode.HTML)
+        for f in ep["files"]:
+            chat, mid = re.search(
+                r"https://t\.me/([^/]+)/(\d+)",
+                f["link"]
+            ).groups()
 
-        for item in ep["files"]:
-            chat, mid = re.search(r"https://t\.me/([^/]+)/(\d+)", item["link"]).groups()
-            src = await client.get_messages(chat, int(mid))
-
-            prog = await m.reply("📥 Downloading…")
+            src = await app.get_messages(chat, int(mid))
+            prog = await m.reply("📥 Downloading...")
             start_t = time.time()
-            last = 0
+            last_edit = 0
 
             async def safe_edit(t):
-                nonlocal last
-                if time.time() - last > 3:
-                    last = time.time()
-                    try: await prog.edit(t)
-                    except: pass
+                nonlocal last_edit
+                if time.time() - last_edit < 3:
+                    return
+                last_edit = time.time()
+                try:
+                    await prog.edit(t)
+                except:
+                    pass
 
-            def cb(c, t, s):
-                pct = int(c*100/t) if t else 0
-                client.loop.create_task(
-                    safe_edit(f"{s}\n{bar(pct)} {pct}%\n{speed(c,start_t)}")
+            def cb(c, t, stage):
+                p = int(c * 100 / t) if t else 0
+                app.loop.create_task(
+                    safe_edit(f"{stage}\n{bar(p)} {p}%\n{speed(c, start_t)}")
                 )
 
-            path = await client.download_media(src, progress=lambda c,t: cb(c,t,"📥 Downloading"))
+            path = await app.download_media(
+                src,
+                progress=lambda c, t: cb(c, t, "📥 Downloading")
+            )
 
             while True:
                 try:
-                    await client.send_video(
+                    await app.send_video(
                         m.chat.id,
                         path,
-                        caption=caption(ep["num"], item["quality"]),
+                        caption=caption(
+                            "Jujutsu Kaisen",
+                            1,
+                            ep["overall"],
+                            ep["overall"],
+                            f["quality"]
+                        ),
                         thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None,
                         supports_streaming=True,
                         parse_mode=ParseMode.HTML,
-                        progress=lambda c,t: cb(c,t,"📤 Uploading")
+                        progress=lambda c, t: cb(c, t, "📤 Uploading")
                     )
                     break
                 except FloodWait as e:
-                    await asyncio.sleep(e.value+1)
+                    await asyncio.sleep(e.value + 2)
 
-            await prog.delete()
+            try:
+                await prog.delete()
+            except:
+                pass
+
             os.remove(path)
 
-    EPISODE_QUEUE.clear()
-    await m.reply("<b>✅ Done</b>", parse_mode=ParseMode.HTML)
+    await m.reply("<b>✅ All uploads completed</b>", parse_mode=ParseMode.HTML)
 
+# ================= RUN =================
 app.run()
