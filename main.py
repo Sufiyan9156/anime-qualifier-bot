@@ -1,8 +1,4 @@
-import os
-import re
-import time
-import asyncio
-
+import os, re, time, asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
@@ -19,7 +15,6 @@ UPLOAD_TAG = "@SenpaiAnimess"
 THUMB_PATH = "/tmp/thumb.jpg"
 QUALITY_ORDER = ["480p", "720p", "1080p", "2160p"]
 
-# ================= APP =================
 app = Client(
     "anime_qualifier_user",
     api_id=API_ID,
@@ -33,11 +28,11 @@ EPISODE_QUEUE = []
 def is_owner(uid: int) -> bool:
     return uid in OWNERS
 
-def bar(p: int) -> str:
+def bar(p):
     f = int(p // 10)
     return "▰" * f + "▱" * (10 - f)
 
-def speed(done: int, start: float) -> str:
+def speed(done, start):
     t = max(1, time.time() - start)
     return f"{done / t / (1024 * 1024):.2f} MB/s"
 
@@ -46,7 +41,6 @@ def speed(done: int, start: float) -> str:
 async def set_thumb(_, m: Message):
     if not is_owner(m.from_user.id):
         return
-
     if not m.reply_to_message or not m.reply_to_message.photo:
         return await m.reply("Reply photo ke saath /set_thumb")
 
@@ -115,7 +109,7 @@ def build_caption(anime, season, ep, overall, quality):
         f"<b>⬡ Uploaded By : {UPLOAD_TAG}</b>"
     )
 
-# ================= QUEUE =================
+# ================= QUEUE (TEXT + CAPTION SAFE) =================
 @app.on_message((filters.text | filters.caption) & filters.regex(r"🎺"))
 async def queue(_, m: Message):
     if not is_owner(m.from_user.id):
@@ -139,13 +133,12 @@ async def queue(_, m: Message):
 async def start(client, m: Message):
     if not is_owner(m.from_user.id):
         return
-
     if not EPISODE_QUEUE:
         return await m.reply("❌ Queue empty")
 
     EPISODE_QUEUE.sort(key=lambda x: x["overall"])
 
-    for ep in EPISODE_QUEUE:
+for ep in EPISODE_QUEUE:
         await m.reply(ep["title"], parse_mode=ParseMode.HTML)
 
         for item in ep["files"]:
@@ -172,9 +165,7 @@ async def start(client, m: Message):
             def cb(c, t, stage):
                 pct = int(c * 100 / t) if t else 0
                 client.loop.create_task(
-                    safe_edit(
-                        f"{stage}\n{bar(pct)} {pct}%\n{speed(c, start_t)}"
-                    )
+                    safe_edit(f"{stage}\n{bar(pct)} {pct}%\n{speed(c, start_t)}")
                 )
 
             path = await client.download_media(
@@ -218,5 +209,4 @@ async def start(client, m: Message):
         parse_mode=ParseMode.HTML
     )
 
-# ================= RUN =================
 app.run()
